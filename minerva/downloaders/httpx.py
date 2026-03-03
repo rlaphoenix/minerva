@@ -7,7 +7,7 @@ from minerva.downloaders import Downloader, ProgressCallback
 
 class HTTPX(Downloader):
     async def __call__(
-        self, url: str, dest: Path, connections: int, pre_allocation: str, on_progress: ProgressCallback
+        self, url: str, dest: Path, size: int, connections: int, pre_allocation: str, on_progress: ProgressCallback
     ) -> None:
         async with httpx.AsyncClient(
             follow_redirects=True,
@@ -16,7 +16,7 @@ class HTTPX(Downloader):
             async with client.stream("GET", url) as resp:
                 resp.raise_for_status()
 
-                total_size: int | None = None
+                total_size: int | None = size
                 content_length = resp.headers.get("Content-Length")
                 if content_length is not None:
                     try:

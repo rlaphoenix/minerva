@@ -8,7 +8,7 @@ class ProgressCallback(Protocol):
 
 class Downloader(Protocol):
     async def __call__(
-        self, url: str, dest: Path, connections: int, pre_allocation: str, on_progress: ProgressCallback
+        self, url: str, dest: Path, size: int, connections: int, pre_allocation: str, on_progress: ProgressCallback
     ) -> None: ...
 
 

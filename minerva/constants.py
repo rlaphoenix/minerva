@@ -20,9 +20,6 @@ MAX_RETRIES = int(os.environ.get("MINERVA_MAX_RETRIES", 3))
 RETRY_DELAY = int(os.environ.get("MINERVA_RETRY_DELAY", 5))
 ARIA2C_CONNECTIONS = int(os.environ.get("MINERVA_ARIA2C_CONNECTIONS", 8))
 ARIA2C_PRE_ALLOCATION = os.environ.get("MINERVA_ARIA2C_PRE_ALLOCATION", "prealloc")  # prealloc, falloc, none
-ARIA2C_SIZE_THRESHOLD = int(
-    os.environ.get("MINERVA_ARIA2C_SIZE_THRESHOLD", 1 * 1024 * 1024)
-)  # skip aria2c for files < 1 MB
 HAS_ARIA2C = ARIA2C is not None
 
 # uploader
