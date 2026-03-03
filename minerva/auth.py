@@ -7,7 +7,7 @@ from typing import Any
 
 from minerva import __version__
 from minerva.console import console
-from minerva.constants import TOKEN_FILE, RUNNING_IN_DOCKER
+from minerva.constants import TOKEN_FILE, IS_DOCKER
 
 
 def auth_headers(token: str) -> dict[str, str]:
@@ -59,7 +59,7 @@ def do_login(server_url: str) -> str:
     console.print("[bold]Opening browser for Discord login...")
     console.print(f"[dim]If it doesn't open: {url}")
     webbrowser.open(url)
-    if (RUNNING_IN_DOCKER):
+    if (IS_DOCKER):
         console.print("[dim]You seem to be running in a container which might not be able to open a browser link.")
         console.print("[dim]If the link is not working, see the alternative authentication method in the README.")
 

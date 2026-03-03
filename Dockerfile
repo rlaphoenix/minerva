@@ -1,6 +1,6 @@
 FROM python:3.13-slim AS builder
 
-ENV RUNNING_IN_DOCKER=true \
+ENV IS_DOCKER=true \
     DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PATH="/root/.local/bin:$PATH"
@@ -26,7 +26,7 @@ RUN uv pip install -e .
 
 FROM python:3.13-slim AS runtime
 
-ENV RUNNING_IN_DOCKER=true \
+ENV IS_DOCKER=true \
     PYTHONUNBUFFERED=1 \
     PATH="/root/.local/bin:$PATH"
 
