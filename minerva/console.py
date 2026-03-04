@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 import httpx
 import humanize
 import jwt
+from os import get_terminal_size as term_size
 from rich import box
 from rich.console import Console, Group
 from rich.rule import Rule
@@ -185,16 +186,17 @@ class WorkerDisplay:
         table = Table(
             box=box.SIMPLE,
             show_header=False,
-            expand=True,
+            expand=False,
             header_style="bold dim",
             padding=(0, 0),
         )
 
+        term_width = term_size().columns
         table.add_column("Status", width=2)
-        table.add_column("File", justify="left")
-        table.add_column("Size", justify="right")
-        table.add_column("Speed", justify="right")
-        table.add_column("Progress", justify="right")
+        table.add_column("File", justify="left", width=term_width-57) # 57 = all other columns' size + the 6 table delimiters
+        table.add_column("Size", justify="right", width=8)
+        table.add_column("Speed", justify="right", width=8)
+        table.add_column("Progress", justify="right", width=33)
 
         for info in visible_jobs:
             st = info["status"]
