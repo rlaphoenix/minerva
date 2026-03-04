@@ -1,6 +1,7 @@
 import collections
 import threading
 import time
+from typing import Any
 
 import httpx
 import humanize
@@ -38,6 +39,8 @@ class WorkerDisplay:
         self._total_fails = 0
         self._total_bytes = 0
         self._username = None
+        self._leaderboard_cache: tuple[int | None, int | None] | tuple[None, None] = (None, None)
+        self._leaderboard_last_fetch = 0
 
     def job_start(self, file_id: int, label: str) -> None:
         now = time.monotonic()
@@ -109,16 +112,18 @@ class WorkerDisplay:
                 token_dec = jwt.decode(token, options={"verify_signature": False})
                 self._username = token_dec.get("username", "")
 
-        rank: int | None = None
-        uploaded: int | None = None
         if self._username:
-            rank, uploaded = next(
-                (
-                    (x.get("rank"), x.get("total_bytes"))
-                    for x in httpx.get("https://minerva-archive.org/api/leaderboard?limit=10000").json()
-                    if x["discord_username"] == self._username
+            if now - self._leaderboard_last_fetch > 180 or self._leaderboard_cache is None:
+                self._leaderboard_cache = next(
+                    (
+                        (x.get("rank"), x.get("total_bytes"))
+                        for x in httpx.get("https://minerva-archive.org/api/leaderboard?limit=10000").json()
+                        if x["discord_username"] == self._username
+                    ),
+                    (None, None)
                 )
-            )
+                self._leaderboard_last_fetch = now
+        rank, uploaded = self._leaderboard_cache
 
         def get_size(speed: int | float | None) -> str:
             return humanize.naturalsize(speed or 0, binary=True, gnu=False, format="%.2f").replace(" Bytes", "b")
