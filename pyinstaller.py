@@ -16,7 +16,7 @@ DEFAULT_AUTHOR = "rlaphoenix"
 SPEC_FILE = Path(f"{DEFAULT_NAME}.spec")
 VERSION_FILE = Path("pyinstaller.version.txt")
 
-ADDITIONAL_DATA: list[tuple[str, str]] = []
+ADDITIONAL_DATA: list[tuple[str, str]] = [("minerva/data/sizes.idx", "minerva/data")]
 EXTRA_ARGS: list[str] = [
     "-y",
     "--collect-all",
