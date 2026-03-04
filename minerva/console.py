@@ -2,13 +2,16 @@ import collections
 import threading
 import time
 
+import httpx
 import humanize
+import jwt
 from rich import box
 from rich.console import Console, Group
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from minerva.auth import load_token
 from minerva.constants import HISTORY_LINES
 
 console = Console()
@@ -32,6 +35,7 @@ class WorkerDisplay:
         self._session_start = time.monotonic()
         self._total_done = 0
         self._total_bytes = 0
+        self._username = None
 
     def job_start(self, file_id: int, label: str) -> None:
         now = time.monotonic()
@@ -79,15 +83,52 @@ class WorkerDisplay:
                 entry += f"  [dim]{note}[/dim]"
             self.history.append(entry)
 
+    def get_stats(self) -> Table:
+        now = time.monotonic()
+
+        with self._lock:
+            elapsed_total = now - self._session_start
+            done_count = self._total_done
+            total_bytes = self._total_bytes
+
+        h = int(elapsed_total // 3600)
+        m = int((elapsed_total % 3600) // 60)
+        s = int(elapsed_total % 60)
+
+        if not self._username:
+            token = load_token()
+            if token:
+                token_dec = jwt.decode(token, options={"verify_signature": False})
+                self._username = token_dec.get("username", "")
+
+        rank: int | None = None
+        uploaded: int | None = None
+        if self._username:
+            rank, uploaded = next(
+                (
+                    (x.get("rank"), x.get("total_bytes"))
+                    for x in httpx.get("https://minerva-archive.org/api/leaderboard?limit=10000").json()
+                    if x["discord_username"] == self._username
+                )
+            )
+
+        stats = Table.grid(expand=True)
+        stats.add_column(justify="left")
+        stats.add_column(justify="right")
+        stats.add_row(
+            f"Uptime: [dim]{h:02d}:{m:02d}:{s:02d}[/dim] "
+            + f"Uploaded: [dim]{done_count} ({humanize.naturalsize(total_bytes)})[/dim]",
+            f"{self._username} #{rank} [dim]({humanize.naturalsize(float(uploaded)) if uploaded else 0})[/dim]",
+        )
+
+        return stats
+
     def __rich__(self) -> Group:
         now = time.monotonic()
 
         with self._lock:
             snapshot = list(self.active.values())
             history_lines = list(self.history)
-            elapsed_total = now - self._session_start
-            done_count = self._total_done
-            total_bytes = self._total_bytes
 
         # Active jobs table
         table = Table(box=box.SIMPLE, show_header=True, expand=True, header_style="bold dim", padding=(0, 1))
@@ -135,22 +176,11 @@ class WorkerDisplay:
                 bar,
             )
 
-        # Session stats footer
-        h = int(elapsed_total // 3600)
-        m = int((elapsed_total % 3600) // 60)
-        s = int(elapsed_total % 60)
-        session_str = f"{h:02d}:{m:02d}:{s:02d}"
-        stats = Text.from_markup(
-            f"[dim]Session: {session_str}  |  "
-            f"Completed: {done_count}  |  "
-            f"Transferred: {humanize.naturalsize(total_bytes)}[/dim]"
-        )
-
         parts: list = []
         if history_lines:
             parts.extend(Text.from_markup(line) for line in history_lines)
             parts.append(Rule(style="dim"))
         parts.append(table)
         parts.append(Rule(style="dim"))
-        parts.append(stats)
+        parts.append(self.get_stats())
         return Group(*parts)
