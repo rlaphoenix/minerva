@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 from random import random
+import sys
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -14,7 +15,7 @@ from rich.live import Live
 from minerva.auth import auth_headers
 from minerva.cache import job_cache
 from minerva.console import WorkerDisplay, console
-from minerva.constants import ARIA2C, QUEUE_PREFETCH
+from minerva.constants import ARIA2C, QUEUE_PREFETCH, IS_DOCKER
 from minerva.error_handling import _raise_if_upgrade_required
 from minerva.jobs import process_job
 from minerva.size_map import get_size
@@ -226,7 +227,9 @@ async def worker_loop(
                     seen_ids.discard(job["file_id"])
                 queue.task_done()
 
-    asyncio.create_task(input_loop(display))
+    # If were in a headless non-tty/non-interactive environment this will be false.
+    if sys.stdin.isatty():
+        asyncio.create_task(input_loop(display))
     with Live(display, console=console, refresh_per_second=4, screen=False):
         workers = [asyncio.create_task(worker()) for _ in range(concurrency)]
         producer_task = asyncio.create_task(producer())

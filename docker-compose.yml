@@ -2,6 +2,9 @@ services:
   archive:
     build:
       context: .
+    # Comment these if you don't want terminal interactivity
+    stdin_open: true
+    tty: true
     # change your worker settings here:
     command: ["uv", "run", "minerva", "run"]
     environment:
