@@ -35,7 +35,11 @@ async def input_loop(display: WorkerDisplay) -> None:
 
 async def update_rank_loop(display: WorkerDisplay) -> None:
     while True:
-        display.update_rank()
+        try:
+            display.update_rank()
+        except Exception:
+            # Just in case one error misses a catch → asyncio voids it otherwise
+            console.print_exception()
         await asyncio.sleep(20)
 
 
