@@ -9,7 +9,7 @@ services:
       MINERVA_SERVER: "https://api.minerva-archive.org"
       MINERVA_UPLOAD_SERVER: "https://gate.minerva-archive.org"
       MINERVA_TOKEN_FILE: "/root/.minerva-dpn/token"
-      MINERVA_TEMP_DIR: "/tmp/.minerva-dpn"
+      MINERVA_TEMP_DIR: "/root/.minerva-dpn/tmp"
       MINERVA_MAX_RETRIES: 3
       MINERVA_RETRY_DELAY: 5
       MINERVA_ARIA2C_SIZE_THRESHOLD: 1048576
