@@ -93,13 +93,7 @@ The following steps assume some knowledge on git/docker.
 To change the settings of the worker, you can set the following environment variables:
 
 - `--server`: `MINERVA_SERVER`
-- `--upload-server`: `MINERVA_UPLOAD_SERVER`
 - `-c/--concurrency`: `MINERVA_CONCURRENCY`
-- `-b/--batch-size`: `MINERVA_BATCH_SIZE`
-- `-a/--aria2c-connections`: `MINERVA_ARIA2C_CONNECTIONS`
-- `-p/--pre-allocation`: `MINERVA_ARIA2C_PRE_ALLOCATION`
-- `--temp-dir`: `MINERVA_TEMP_DIR`
-- `--keep-files`: `MINERVA_KEEP_FILES`
 
 There are more advanced environment variables available, you can find them listed in
 [constants.py](/minerva/constants.py).
@@ -166,13 +160,6 @@ Now feel free to work on the project however you like, all code will be checked 
 
 This software is licensed under the terms of [CC0 1.0 Universal](LICENSE).
 You can find a copy of the license in the LICENSE file in the root folder
-
-This project uses the following software:
-
-- Aria2(c) licensed under GPL-v2, used for faster downloads: <https://github.com/aria2/aria2>
-
-No changes were made to any of the aforementioned software and copies of their licenses
-can be found next to their binaries within the bin folder.
 
 * * *
 

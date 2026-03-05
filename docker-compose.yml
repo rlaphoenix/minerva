@@ -9,19 +9,12 @@ services:
     command: ["uv", "run", "minerva", "run"]
     environment:
       # extra settings you can change, see ./minerva/constants.py
-      MINERVA_SERVER: "https://api.minerva-archive.org"
-      MINERVA_UPLOAD_SERVER: "https://gate.minerva-archive.org"
+      MINERVA_SERVER: "https://firehose.minerva-archive.org"
       MINERVA_TOKEN_FILE: "/root/.minerva-dpn/token"
-      MINERVA_TEMP_DIR: "/root/.minerva-dpn/tmp"
       MINERVA_MAX_RETRIES: 3
       MINERVA_RETRY_DELAY: 5
-      MINERVA_ARIA2C_SIZE_THRESHOLD: 1048576
-      MINERVA_QUEUE_PREFETCH: 2
       MINERVA_HISTORY_LINES: 5
-      MINERVA_CONCURRENCY: 2
-      MINERVA_BATCH_SIZE: 10
-      MINERVA_AUTH_HOST: "127.0.0.1"
-      MINERVA_AUTH_PORT: 19283
+      MINERVA_CONCURRENCY: 10
     volumes:
       - ${HOME}/.minerva-dpn/:/root/.minerva-dpn
 

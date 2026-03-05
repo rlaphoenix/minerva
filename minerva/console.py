@@ -8,14 +8,13 @@ from urllib.parse import urlparse
 
 import httpx
 import humanize
-import jwt
 from rich import box
 from rich.console import Console, Group
+from rich.markup import escape
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from minerva.auth import load_token
 from minerva.constants import HISTORY_LINES
 
 console = Console()
@@ -53,9 +52,10 @@ class WorkerDisplay:
             job.update(
                 dict(
                     label=label,
-                    status="DL",
+                    status="OK",
                     size=job["size"] or 0,
-                    done=0,
+                    downloaded=0,
+                    uploaded=0,
                     waiting=True,
                     start_time=now,
                     prev_done=0,
@@ -66,25 +66,36 @@ class WorkerDisplay:
             self.active[job["file_id"]] = job
 
     def job_update(
-        self, file_id: int, status: str, size: int | None = None, done: int | None = None, waiting: bool | None = None
+        self,
+        file_id: int,
+        status: str,
+        size: int | None = None,
+        downloaded: int | None = None,
+        uploaded: int | None = None,
+        waiting: bool | None = None,
     ) -> None:
-        now = time.monotonic()
-        with self._lock:
-            if file_id not in self.active:
-                return
-            job = self.active[file_id]
-            if done is not None:
-                dt = now - job["prev_time"]
-                if dt >= 0.5:
-                    dd = done - job["prev_done"]
-                    job["speed"] = dd / dt if dt > 0 else job["speed"]
-                    job["prev_done"] = done
-                    job["prev_time"] = now
-                job["done"] = done
-            job["status"] = status
-            if size is not None:
-                job["size"] = size
-            job["waiting"] = waiting
+        try:
+            now = time.monotonic()
+            with self._lock:
+                if file_id not in self.active:
+                    return
+                job = self.active[file_id]
+                if downloaded is not None:
+                    dt = now - job["prev_time"]
+                    if dt >= 0.5:
+                        dd = downloaded - job["prev_done"]
+                        job["speed"] = dd / dt if dt > 0 else job["speed"]
+                        job["prev_done"] = downloaded
+                        job["prev_time"] = now
+                    job["downloaded"] = downloaded
+                if uploaded is not None:
+                    job["uploaded"] = uploaded
+                job["status"] = status
+                if size is not None:
+                    job["size"] = size
+                job["waiting"] = waiting
+        except Exception:
+            console.print_exception()
 
     def job_done(self, file_id: int, label: str, ok: bool, note: str = "") -> None:
         with self._lock:
@@ -118,22 +129,13 @@ class WorkerDisplay:
             done_count = self._total_done
             fail_count = self._total_fails
             total_bytes = self._total_bytes
-            dl_speed = sum(self.effective_speed(x) for x in snapshot if x["status"] == "DL")
-            ul_speed = sum(self.effective_speed(x) for x in snapshot if x["status"] == "UL")
+            speed = sum(self.effective_speed(x) for x in snapshot)
             rank, uploaded = self._leaderboard_cache
             username = self._username
 
         h = int(elapsed_total // 3600)
         m = int((elapsed_total % 3600) // 60)
         s = int(elapsed_total % 60)
-
-        if not username:
-            token = load_token()
-            if token:
-                token_dec = jwt.decode(token, options={"verify_signature": False})
-                username = token_dec.get("username", "")
-                with self._lock:
-                    self._username = username
 
         def get_size(speed: int | float | None) -> str:
             return humanize.naturalsize(speed or 0, binary=True, gnu=False, format="%.2f").replace(" Bytes", "b")
@@ -145,8 +147,7 @@ class WorkerDisplay:
             f"[cyan]{username} #{rank or '--'}[/cyan] [dim]({get_size(float(uploaded or 0))})[/dim] "
             + f"Uploads: [dim]{done_count} ({get_size(total_bytes)})[/dim] "
             + f"Failures: [dim]{fail_count}[/dim]",
-            f"[green]⬇{get_size(dl_speed)}/s[/green] [blue]⬆{get_size(ul_speed)}/s[/blue] "
-            + f"[dim]{h:02d}:{m:02d}:{s:02d}[/dim]",
+            f"[blue]Speed: {get_size(speed)}/s[/blue] " + f"[dim]{h:02d}:{m:02d}:{s:02d}[/dim]",
         )
 
         return stats
@@ -213,7 +214,6 @@ class WorkerDisplay:
             padding=(0, 0),
         )
 
-        table.add_column("Status", width=2)  # fit UL/DL/RT
         table.add_column(
             "File", overflow="ellipsis", no_wrap=True, justify="left", ratio=1
         )  # expand to fill space, but prefer shorter names
@@ -222,57 +222,59 @@ class WorkerDisplay:
         table.add_column("Progress", justify="left", width=20)  # fit 14-width progress bar + percentage
         table.add_column("Uptime", justify="right", width=5)  # fit mm:ss up to 99:59
 
-        for info in visible_jobs:
-            color = {"DL": "cyan", "UL": "yellow", "RT": "magenta"}.get(info["status"], "white")
-            status = f"[{color}]{info['status']}[/{color}]"
-            size = info["size"]
-            done = info["done"]
-            waiting = info["waiting"]
-            speed = self.effective_speed(info)
-            elapsed = now - info["start_time"]
-            elapsed_str = f"[dim]{int(elapsed // 60):02d}:{int(elapsed % 60):02d}[/dim]"
+        for job in visible_jobs:
+            try:
+                color = {"OK": "blue", "RT": "magenta"}.get(job["status"], "white")
+                size = job["size"]
+                waiting = job["waiting"]
+                speed = self.effective_speed(job)
+                elapsed = now - job["start_time"]
+                elapsed_str = f"[dim]{int(elapsed // 60):02d}:{int(elapsed % 60):02d}[/dim]"
 
-            if not waiting:
-                pct = min(1.0, done / (size or 1))
-                bar_w = 14
-                filled = int(bar_w * pct)
-                speed_str = f"[dim]{humanize.naturalsize(speed, gnu=True)}/s[/dim]" if speed > 0 else "[dim]—[/dim]"
-                bar = (
-                    f"[{color}]"
-                    + "█" * filled
-                    + f"[/{color}]"
-                    + "[dim]"
-                    + "░" * (bar_w - filled)
-                    + "[/dim]"
-                    + f" {pct * 100:4.0f}%"
+                if not waiting:
+                    size = job["size"] or 1
+                    speed_str = f"[dim]{humanize.naturalsize(speed, gnu=True)}/s[/dim]" if speed > 0 else "[dim]—[/dim]"
+                    size = max(job["size"] or 0, 1)
+                    dl = max(job.get("downloaded", 0), 0)
+                    ul = max(job.get("uploaded", 0), 0)
+                    dl = dl - ul
+                    dl_ratio = min(dl / size, 1)
+                    ul_ratio = min(ul / size, 1)
+                    bar_w = 14
+                    dl_w = int(bar_w * dl_ratio)
+                    ul_w = int(bar_w * ul_ratio)
+                    if dl_w + ul_w > bar_w:
+                        ul_w = max(0, bar_w - dl_w)
+                    remaining = bar_w - dl_w - ul_w
+                    pct = (ul / size) * 100
+                    bar = f"[green]{'█' * ul_w}[/green][blue]{'█' * dl_w}[/blue][dim]{'░' * remaining}[/dim] {pct:4.0f}%"
+                else:
+                    spin = _SPINNER[int(now * 8) % len(_SPINNER)]
+                    speed_str = f"[{color}]{spin} Waiting[/{color}]"
+
+                    note = ""
+                    if job["status"] == "RT":
+                        note = "to retry after fail"
+                    bar = f"[{color}]{note}[/{color}]"
+
+                file_str = Path(urlparse(job["label"]).path).name
+                if job.get("is_cached"):
+                    file_str = f"[orange1]Cache:[/orange1] {escape(file_str)}"
+
+                if size:
+                    size_str = humanize.naturalsize(size)
+                else:
+                    size_str = "—"
+
+                table.add_row(
+                    file_str,
+                    size_str,
+                    speed_str,
+                    bar,
+                    elapsed_str,
                 )
-            else:
-                spin = _SPINNER[int(now * 8) % len(_SPINNER)]
-                speed_str = f"[{color}]{spin} Waiting[/{color}]"
-
-                note = ""
-                if info["status"] == "DL":
-                    note = "patiently in queue"
-                elif info["status"] == "UL":
-                    note = "on server to respond"
-                elif info["status"] == "RT":
-                    note = "to retry after fail"
-                bar = f"[{color}]{note}[/{color}]"
-
-            file_str = Path(urlparse(info["label"]).path).name
-            if info.get("is_cached"):
-                file_str = f"[orange1]Cache:[/orange1] {file_str}"
-
-            size_str = humanize.naturalsize(size)
-
-            table.add_row(
-                status,
-                file_str,
-                size_str,
-                speed_str,
-                bar,
-                elapsed_str,
-            )
+            except Exception:
+                console.print_exception()
 
         parts: list = []
 

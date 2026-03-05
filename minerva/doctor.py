@@ -1,6 +1,3 @@
-import shutil
-from pathlib import Path
-
 import click
 import httpx
 
@@ -8,10 +5,7 @@ from minerva.auth import load_token
 from minerva.console import console
 from minerva.constants import (
     CONNECTIVITY_CHECK_TIMEOUT,
-    HAS_ARIA2C,
     SERVER_URL,
-    TEMP_DIR,
-    UPLOAD_SERVER_URL,
 )
 from minerva.version_check import check_for_update
 
@@ -44,9 +38,7 @@ def print_warn(tag: str, message: str) -> None:
 
 @click.command("doctor")
 @click.option("--server", default=SERVER_URL, help="Manager server URL")
-@click.option("--upload-server", default=UPLOAD_SERVER_URL, help="Upload API URL")
-@click.option("--temp-dir", default=str(TEMP_DIR), help="Temp download dir")
-def doctor_cmd(server: str, upload_server: str, temp_dir: str) -> None:
+def doctor_cmd(server: str) -> None:
     console.print("[bold]Checking your setup...[/bold]")
 
     token = load_token()
@@ -56,8 +48,7 @@ def doctor_cmd(server: str, upload_server: str, temp_dir: str) -> None:
         print_error("Login Token", "Not set (run `minerva login` first)")
 
     check_url("Internet", "http://google.com/gen_204")
-    check_url("Manager Server", server)
-    check_url("Upload Server", upload_server)
+    check_url("Server", server)
 
     has_update = check_for_update()
     if not has_update:
@@ -65,24 +56,6 @@ def doctor_cmd(server: str, upload_server: str, temp_dir: str) -> None:
     else:
         print_warn("Script version", "A new version is available")
 
-    if HAS_ARIA2C:
-        print_success("Downloader", "aria2c installed")
-    else:
-        print_warn("Downloader", "aria2c not found, using slower httpx")
-
-    t_dir = Path(temp_dir)
-    try:
-        t_dir.mkdir(parents=True, exist_ok=True)
-        test_file = t_dir / ".doctor_test"
-        test_file.write_text("test")
-        test_file.unlink()
-        print_success("Temp Directory", f"Writable ({t_dir})")
-    except Exception as e:
-        print_error("Temp Directory", f"Not writable ({t_dir}) - {e}")
-
-    if t_dir.exists():
-        _, _, free = shutil.disk_usage(t_dir)
-        free_gb = free / (1024**3)
-        print_success("Free Space", f"{free_gb:.2f} GB available")
+    # TODO: Add download speed checks
 
     console.print()

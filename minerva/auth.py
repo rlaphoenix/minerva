@@ -1,20 +1,10 @@
-import http.server
-import threading
-import urllib.parse
 import webbrowser
-from typing import Any
+from urllib.parse import quote
 
+import httpx
 from rich.console import Console
 
-from minerva import __version__
-from minerva.constants import AUTH_HOST, AUTH_PORT, IS_DOCKER, TOKEN_FILE
-
-
-def auth_headers(token: str) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {token}",
-        "X-Minerva-Worker-Version": __version__,
-    }
+from minerva.constants import CALLBACK_ENDPOINT, IS_DOCKER, OAUTH_URL, TOKEN_FILE
 
 
 def save_token(token: str) -> None:
@@ -24,40 +14,27 @@ def save_token(token: str) -> None:
 
 def load_token() -> str | None:
     if TOKEN_FILE.exists():
-        t = TOKEN_FILE.read_text().strip()
-        if t:
-            return t
+        token = TOKEN_FILE.read_text().strip()
+        if token:
+            if not verify_token(token):
+                TOKEN_FILE.unlink()
+                raise ValueError("Authorization is invalid or has expired. Please run 'minerva login' again.")
+            return token
     return None
 
 
+def verify_token(token: str) -> bool:
+    try:
+        r = httpx.get(url="https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {token}"})
+        return r.status_code == 200
+    except Exception as e:
+        raise Exception(f"Failed to verify token with Discord: {e}") from e
+
+
 def do_login(server_url: str) -> str:
-    token = None
-    event = threading.Event()
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            nonlocal token
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            if "token" in params:
-                token = params["token"][0]
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html")
-                self.end_headers()
-                self.wfile.write(b"<h2>Logged in! You can close this tab.</h2>")
-                event.set()
-            else:
-                self.send_response(400)
-                self.end_headers()
-
-        def log_message(self, *_: Any) -> None:
-            pass
-
-    srv = http.server.HTTPServer((AUTH_HOST, AUTH_PORT), Handler)
-    srv.timeout = 120
-
     console = Console()
 
-    url = f"{server_url}/auth/discord/login?worker_callback=http://{AUTH_HOST}:{AUTH_PORT}/"
+    url = OAUTH_URL.format(redirect_uri=quote(f"{server_url}{CALLBACK_ENDPOINT}"))
     console.print("[bold]Opening browser for Discord login...")
     console.print(f"[dim]If it doesn't open: {url}")
     webbrowser.open(url)
@@ -65,12 +42,16 @@ def do_login(server_url: str) -> str:
         console.print("[dim]You seem to be running in a container which might not be able to open a browser link.")
         console.print("[dim]If the link is not working, see the alternative authentication method in the README.")
 
-    while not event.is_set():
-        srv.handle_request()
-    srv.server_close()
-
-    if not token:
-        raise RuntimeError("Login failed")
+    token: str | None = None
+    while True:
+        token = input("Once you have authorized, enter the given code: ").strip()
+        if not token:
+            console.print("[red]Token cannot be empty, try again: ")
+            continue
+        if not verify_token(token):
+            console.print("[red]Token is invalid or has expired. Try again: ")
+            continue
+        break
 
     save_token(token)
     console.print("[bold green]Login successful!")

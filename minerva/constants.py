@@ -1,62 +1,41 @@
 import os
-import shutil
-import tempfile
 from pathlib import Path
 
-if os.environ.get("MINERVA_TEMP_DIR"):
-    TEMP_DIR = Path(os.environ["MINERVA_TEMP_DIR"])
-elif os.name == "posix":
-    TEMP_DIR = Path.home() / ".minerva-dpn" / "tmp"
-else:
-    TEMP_DIR = Path(tempfile.gettempdir()) / ".minerva-dpn"
+# servers/endpoints
+SERVER_URL = os.environ.get("MINERVA_SERVER", "https://firehose.minerva-archive.org")
+CALLBACK_ENDPOINT = "/code"
+WORKER_ENDPOINT = "/worker"
 
-# servers
-SERVER_URL = os.environ.get("MINERVA_SERVER", "https://api.minerva-archive.org")
-UPLOAD_SERVER_URL = os.environ.get("MINERVA_UPLOAD_SERVER", "https://gate.minerva-archive.org")
+# vesioning and identity
+VERSION: int = 3  # TODO: Use package version instead of hardcoding
+USER_AGENT = f"HyperscrapeWorker/v{VERSION} (Created by Hackerdude for Minerva)"
 
 # auth
+OAUTH_URL = "https://discord.com/oauth2/authorize?client_id=1478862142793977998&response_type=code&redirect_uri={redirect_uri}&scope=identify"
 TOKEN_FILE = Path(os.environ.get("MINERVA_TOKEN_FILE", Path.home() / ".minerva-dpn" / "token"))
 AUTH_HOST = os.environ.get("MINERVA_AUTH_HOST", "127.0.0.1")
 AUTH_PORT = int(os.environ.get("MINERVA_AUTH_PORT", 19283))
 
-# downloader
-CONCURRENCY = int(os.environ.get("MINERVA_CONCURRENCY", 2))
-BATCH_SIZE = int(os.environ.get("MINERVA_BATCH_SIZE", 10))
-ARIA2C = shutil.which("aria2c")
-KEEP_FILES = os.environ.get("MINERVA_KEEP_FILES", "false").lower() in ("1", "true", "yes")
-MAX_DOWNLOAD_RETRIES = int(os.environ.get("MINERVA_MAX_DOWNLOAD_RETRIES", 3))
-RETRY_DELAY = int(os.environ.get("MINERVA_RETRY_DELAY", 5))
-ARIA2C_CONNECTIONS = int(os.environ.get("MINERVA_ARIA2C_CONNECTIONS", 8))
-ARIA2C_PRE_ALLOCATION = os.environ.get("MINERVA_ARIA2C_PRE_ALLOCATION", "prealloc")  # prealloc, falloc, none
-HAS_ARIA2C = ARIA2C is not None
+# speed tests
+SPEED_TEST_URL = "http://ipv4.download.thinkbroadband.com/5MB.zip"
+MYRIENT_SPEED_TEST_URL = "https://myrient.erista.me/files/No-Intro/VM%20Labs%20-%20NUON%20%28Digital%29/Atari%202600%20Pac-Man%20%28Unknown%29%20%28Unl%29.zip"
 
-# uploader
-MAX_UPLOAD_RETRIES = int(os.environ.get("MINERVA_UPLOAD_RETRIES", 10))
-UPLOAD_CHUNK_SIZE = (
-    8 * 1024 * 1024
-)  # Cloudflare limit is 50 MB, but using 8 MB to reduce total chunks and speed up uploads
-UPLOAD_START_RETRIES = 12
-UPLOAD_CHUNK_RETRIES = 30
-UPLOAD_FINISH_RETRIES = 12
-
-# error handling
-RETRIABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+# timeouts and retries
 CONNECTIVITY_CHECK_TIMEOUT = 5.0
+MAX_RETRIES = int(os.environ.get("MINERVA_MAX_RETRIES", 5))
+RETRY_DELAY = int(os.environ.get("MINERVA_RETRY_DELAY", 5))
 
-# jobs
-REPORT_RETRIES = 20
-JOB_STATUS_RETRIES = 10
+# sizes and counts
+CONCURRENCY = int(os.environ.get("MINERVA_CONCURRENCY", 2))
+MAX_CHUNK_COUNT = 300
+SUBCHUNK_SIZE = 996147  # DO NOT CHANGE OR YOUR SCRIPT WILL BREAK!
+
+# cache
 CACHE_FILE = Path(os.environ.get("MINERVA_CACHE_FILE", Path.home() / ".minerva-dpn" / "sessions.json"))
 SKIP_CACHE = os.environ.get("MINERVA_SKIP_CACHE", "false").lower() in ("1", "true", "yes")
 
-# worker loop
-QUEUE_PREFETCH = int(os.environ.get("MINERVA_QUEUE_PREFETCH", 2))  # queue depth = concurrency * this
-
-# console/logs
+# ui
 HISTORY_LINES = int(os.environ.get("MINERVA_HISTORY_LINES", 5))  # completed jobs shown above active table
 
-# size lookup
-SIZE_IDX_FILE = Path(os.environ.get("MINERVA_SIZE_IDX_FILE", Path(__file__).parent / "data" / "sizes.idx"))
-
-# docker
+# environment
 IS_DOCKER = os.environ.get("IS_DOCKER", "").lower() in ("1", "true", "yes")

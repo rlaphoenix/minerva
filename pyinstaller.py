@@ -16,7 +16,7 @@ DEFAULT_AUTHOR = "minerva-archive"
 SPEC_FILE = Path(f"{DEFAULT_NAME}.spec")
 VERSION_FILE = Path("pyinstaller.version.txt")
 
-ADDITIONAL_DATA: list[tuple[str, str]] = [("minerva/data/sizes.idx", "minerva/data")]
+ADDITIONAL_DATA: list[tuple[str, str]] = []
 EXTRA_ARGS: list[str] = [
     "-y",
     "--collect-all",
