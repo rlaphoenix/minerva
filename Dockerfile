@@ -45,12 +45,5 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app /app
 
-# Copy the entrypoint wrapper
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# Use the wrapper as entrypoint
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-
 # Default command
 CMD ["uv", "run", "minerva", "run"]
