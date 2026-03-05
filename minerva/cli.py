@@ -30,6 +30,7 @@ from minerva.constants import (
     MAX_UPLOAD_RETRIES,
     SERVER_URL,
     SIZE_IDX_FILE,
+    SKIP_CACHE,
     TEMP_DIR,
     UPLOAD_SERVER_URL,
 )
@@ -83,6 +84,9 @@ def status() -> None:
 @click.option("--min-job-size", default="", help="Skip jobs for files smaller than a given size")
 @click.option("--max-job-size", default="", help="Skip jobs for files larger than a given size")
 @click.option("--keep-files", is_flag=True, default=KEEP_FILES, help="Keep downloaded files after upload")
+@click.option(
+    "--skip-cache", is_flag=True, default=SKIP_CACHE, help="Skip the cache (only recommended when server is down)"
+)
 def run(
     ctx: click.Context,
     server: str,
@@ -98,6 +102,7 @@ def run(
     min_job_size: str,
     max_job_size: str,
     keep_files: bool,
+    skip_cache: bool,
 ) -> None:
     """Start downloading and uploading files."""
     # ensure user is logged-in first
@@ -132,6 +137,7 @@ def run(
             min_job_size,
             max_job_size,
             keep_files,
+            skip_cache,
         )
     )
 

@@ -214,7 +214,9 @@ class WorkerDisplay:
         )
 
         table.add_column("Status", width=2)  # fit UL/DL/RT
-        table.add_column("File", overflow="ellipsis", no_wrap=True, justify="left", ratio=1)  # expand to fill space, but prefer shorter names
+        table.add_column(
+            "File", overflow="ellipsis", no_wrap=True, justify="left", ratio=1
+        )  # expand to fill space, but prefer shorter names
         table.add_column("Size", justify="right", width=10)  # fit sizes up to 10,0000 TB
         table.add_column("Speed", justify="right", width=10)  # fit speeds up to 10000 T/s
         table.add_column("Progress", justify="left", width=20)  # fit 14-width progress bar + percentage

@@ -45,6 +45,7 @@ CONNECTIVITY_CHECK_TIMEOUT = 5.0
 REPORT_RETRIES = 20
 JOB_STATUS_RETRIES = 10
 CACHE_FILE = Path(os.environ.get("MINERVA_CACHE_FILE", Path.home() / ".minerva-dpn" / "sessions.json"))
+SKIP_CACHE = os.environ.get("MINERVA_SKIP_CACHE", "false").lower() in ("1", "true", "yes")
 
 # worker loop
 QUEUE_PREFETCH = int(os.environ.get("MINERVA_QUEUE_PREFETCH", 2))  # queue depth = concurrency * this

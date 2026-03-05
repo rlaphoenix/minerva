@@ -60,6 +60,7 @@ async def worker_loop(
     min_job_size: str,
     max_job_size: str,
     keep_files: bool,
+    skip_cache: bool,
 ) -> None:
     token_dec = jwt.decode(token, options={"verify_signature": False})
 
@@ -76,6 +77,7 @@ async def worker_loop(
     console.print(f"Max job size:   {naturalsize(parse_size(max_job_size)) if max_job_size else 'N/A'}")
     console.print(f"Max cache size: {naturalsize(parse_size(max_cache_size)) if max_cache_size else 'N/A'}")
     console.print(f"Keep files:     {'yes' if keep_files else 'no'}")
+    console.print(f"Skip cache:     {'yes' if skip_cache else 'no'}")
     console.print()
 
     if not ARIA2C:
@@ -165,12 +167,13 @@ async def worker_loop(
                     await asyncio.sleep(0.5)
                     continue
 
-                cached_jobs = job_cache.list()
                 jobs_added = 0
-                if cached_jobs:
-                    jobs_added = await queue_jobs(cached_jobs)
-                    if jobs_added == 0:
-                        await asyncio.sleep(0.5)
+                if not skip_cache:
+                    cached_jobs = job_cache.list()
+                    if cached_jobs:
+                        jobs_added = await queue_jobs(cached_jobs)
+                        if jobs_added == 0:
+                            await asyncio.sleep(0.5)
 
                 fetch_count = max(0, min(batch_size, free_slots - jobs_added))
                 if fetch_count > 0:
