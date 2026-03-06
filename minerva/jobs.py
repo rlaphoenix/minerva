@@ -52,6 +52,7 @@ async def process_job(
                             return
 
                         downloaded += len(data_chunk)
+                        is_downloaded = downloaded >= chunk_size
                         display.job_update(
                             file_id=job["file_id"],
                             status="OK",
@@ -76,7 +77,6 @@ async def process_job(
                         payload = ws_response.get_payload()
                         if not isinstance(payload, dict):
                             raise Exception(f"Unexpected response payload ({type(payload)}): {payload}")
-                        is_downloaded = (downloaded + len(data_chunk)) >= chunk_size
                         is_error = ws_response.get_type() != WSMessageType.OK_RESPONSE
                         if is_downloaded and payload.get("error") in ["Chunk already complete", "Unknown chunk"]:
                             # TODO: these seem to happen once a file gets uploaded, needs to be double checked
