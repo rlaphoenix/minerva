@@ -35,6 +35,9 @@ async def process_job(
 
     display.job_start(job, label)
     for attempt in range(1, retries + 1):
+        if stop.is_set():
+            display.job_done(job.file_id, label, ok=False, note="Stopping...")
+            return
         display.job_update(job.file_id, "OK", size=chunk_size, downloaded=0, uploaded=0, waiting=False)
         downloaded = 0
         uploaded = 0
@@ -52,7 +55,6 @@ async def process_job(
                     response.raise_for_status()
                     async for data_chunk in response.aiter_bytes(SUBCHUNK_SIZE):
                         if stop.is_set():
-                            display.job_done(job.file_id, label, ok=False, note="Stopping...")
                             return
 
                         downloaded += len(data_chunk)
@@ -92,6 +94,7 @@ async def process_job(
                             uploaded=uploaded,
                             waiting=False,
                         )
+                    display.job_done(job.file_id, label, ok=True, note=humanize.naturalsize(chunk_size) if chunk_size else "")
                     break
             except websockets.exceptions.WebSocketException as e:
                 print(f"Websocket error while processing job {job.file_id}: {e}")
@@ -103,7 +106,7 @@ async def process_job(
                     display.job_done(
                         job.file_id, label, ok=False, note=f"Job Failed ({retries} attempts): {str(last_err)}"
                     )
-            except TimeoutError as e:
+            except httpx.TimeoutException as e:
                 last_err = e
                 if attempt < retries:
                     display.job_update(job.file_id, "RT", downloaded=0, uploaded=0, waiting=True)
@@ -141,8 +144,6 @@ async def process_job(
                         job.file_id, label, ok=False, note=f"Job Failed ({retries} attempts): {str(last_err)}"
                     )
                     await report_job_failure(job, server, lock, job_response_futures, job_response_lock)
-            finally:
-                display.job_done(job.file_id, label, ok=True, note=humanize.naturalsize(chunk_size) if chunk_size else "")
 
 
 async def report_job_failure(
