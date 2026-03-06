@@ -259,9 +259,7 @@ class WorkerDisplay:
                         note = "to retry after fail"
                     bar = f"[{color}]{note}[/{color}]"
 
-                file_str = Path(urlparse(job["label"]).path).name
-                if job.get("is_cached"):
-                    file_str = f"[orange1]Cache:[/orange1] {escape(file_str)}"
+                file_str = Text(Path(urlparse(job["label"]).path).name)
 
                 if size:
                     size_str = humanize.naturalsize(size)

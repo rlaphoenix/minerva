@@ -28,10 +28,6 @@ CONCURRENCY = int(os.environ.get("MINERVA_CONCURRENCY", 2))
 MAX_CHUNK_COUNT = 300
 SUBCHUNK_SIZE = 996147  # DO NOT CHANGE OR YOUR SCRIPT WILL BREAK!
 
-# cache
-CACHE_FILE = Path(os.environ.get("MINERVA_CACHE_FILE", Path.home() / ".minerva-dpn" / "sessions.json"))
-SKIP_CACHE = os.environ.get("MINERVA_SKIP_CACHE", "false").lower() in ("1", "true", "yes")
-
 # ui
 HISTORY_LINES = int(os.environ.get("MINERVA_HISTORY_LINES", 5))  # completed jobs shown above active table
 

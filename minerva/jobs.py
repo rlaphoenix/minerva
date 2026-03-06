@@ -8,7 +8,6 @@ import humanize
 import websockets
 from websockets.connection import Connection
 
-from minerva.cache import job_cache
 from minerva.console import WorkerDisplay, console
 from minerva.constants import RETRY_DELAY, SUBCHUNK_SIZE, USER_AGENT
 from minerva.ws_message import WSMessage, WSMessageType
@@ -27,9 +26,8 @@ async def process_job(
     label = urllib.parse.unquote(os.path.basename(job["url"]))
     chunk_size: int = job["range"][1] - job["range"][0]  # range is inclusive
     last_err: Exception | None = None
-    job_cache.set(job)
-    display.job_start(job, label)
 
+    display.job_start(job, label)
     for attempt in range(1, retries + 1):
         display.job_update(job["file_id"], "OK", size=chunk_size, downloaded=0, uploaded=0, waiting=False)
         downloaded = 0

@@ -59,7 +59,6 @@ async def worker_loop(
     max_cache_size: str,
     min_job_size: str,
     max_job_size: str,
-    skip_cache: bool,
 ) -> None:
     # prevent "too many open files" errors with high concurrency
     if os.name == "posix":
@@ -83,7 +82,6 @@ async def worker_loop(
     console.print(f"Max cache size: [dim]{naturalsize(parse_size(max_cache_size)) if max_cache_size else 'N/A'}[/dim]")
     console.print(f"Min job size:   [dim]{naturalsize(parse_size(min_job_size)) if min_job_size else 'N/A'}[/dim]")
     console.print(f"Max job size:   [dim]{naturalsize(parse_size(max_job_size)) if max_job_size else 'N/A'}[/dim]")
-    console.print(f"Skip cache:     [dim]{'Yes' if skip_cache else 'No'}[/dim]")
     console.print()
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency)
@@ -219,16 +217,7 @@ async def worker_loop(
                         await asyncio.sleep(1)
                         continue
 
-                    jobs_added = 0
-                    # TODO: Can the Hyperscraper coordinator be cached?
-                    # if not skip_cache:
-                    #     cached_jobs = job_cache.list()
-                    #     if cached_jobs:
-                    #         jobs_added = await queue_jobs(cached_jobs)
-                    #         if jobs_added == 0:
-                    #             await asyncio.sleep(1)
-
-                    fetch_count = max(0, min(concurrency, free_slots - jobs_added))
+                    fetch_count = max(0, min(concurrency, free_slots))
                     if fetch_count > 0:
                         try:
                             async with websocket_lock:

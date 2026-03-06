@@ -14,7 +14,6 @@ from minerva.constants import (
     CONCURRENCY,
     MAX_RETRIES,
     SERVER_URL,
-    SKIP_CACHE,
 )
 from minerva.doctor import doctor_cmd
 from minerva.loop import worker_loop
@@ -53,7 +52,6 @@ def status() -> None:
 @click.option("-m", "--max-cache-size", default="", help="Max amount of storage to use at any given moment")
 @click.option("--min-job-size", default="", help="Skip jobs for files smaller than a given size")
 @click.option("--max-job-size", default="", help="Skip jobs for files larger than a given size")
-@click.option("--skip-cache", is_flag=True, default=SKIP_CACHE, help="Skip processing of cached jobs")
 def run(
     ctx: click.Context,
     server: str,
@@ -62,7 +60,6 @@ def run(
     max_cache_size: str,
     min_job_size: str,
     max_job_size: str,
-    skip_cache: bool,
 ) -> None:
     """Start downloading and uploading files."""
     # ensure user is logged-in first
@@ -87,7 +84,6 @@ def run(
             max_cache_size,
             min_job_size,
             max_job_size,
-            skip_cache,
         )
     )
 
