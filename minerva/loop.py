@@ -95,7 +95,6 @@ async def worker_loop(
     seen_ids: set[str] = set()
     seen_lock = asyncio.Lock()
     display = WorkerDisplay()
-    queue_lock = asyncio.Lock()
     websocket_lock = asyncio.Lock()
 
     min_job_size_bytes = parse_size(min_job_size) if min_job_size else None
@@ -194,9 +193,7 @@ async def worker_loop(
                 async def producer() -> None:
                     """Producer task to keep the queue filled with jobs from the server."""
                     while not stop_event.is_set():
-                        async with queue_lock:
-                            free_slots = max(0, queue.maxsize - queue.qsize())
-
+                        free_slots = max(0, queue.maxsize - queue.qsize())
                         if queue.qsize() >= max(1, queue.maxsize // 2):
                             await asyncio.sleep(1)
                             continue
