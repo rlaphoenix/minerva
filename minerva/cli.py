@@ -5,7 +5,6 @@ Minerva DPN Worker — single-file volunteer download client.
 import asyncio
 
 import click
-from humanfriendly import parse_size
 
 from minerva import __version__
 from minerva.auth import do_login, load_token

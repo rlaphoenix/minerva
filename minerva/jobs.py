@@ -92,6 +92,7 @@ async def process_job(
                             uploaded=uploaded,
                             waiting=False,
                         )
+                        break
             except websockets.exceptions.WebSocketException as e:
                 print(f"Websocket error while processing job {job.file_id}: {e}")
                 last_err = e

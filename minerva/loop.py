@@ -191,7 +191,7 @@ async def worker_loop(
                     async with queue_lock:
                         free_slots = max(0, queue.maxsize - queue.qsize())
 
-                    if queue.qsize() >= queue.maxsize // 2:
+                    if queue.qsize() >= max(1, queue.maxsize // 2):
                         await asyncio.sleep(1)
                         continue
 
@@ -250,6 +250,10 @@ async def worker_loop(
                             job_response_futures=job_response_futures,
                             job_response_lock=job_response_lock,
                         )
+                    except Exception as e:
+                        console.print(f"[red]Error processing job {job.file_id}: {e}[/red]")
+                        await asyncio.sleep(RETRY_DELAY)
+                        continue
                     finally:
                         async with seen_lock:
                             seen_ids.discard(job.file_id)
