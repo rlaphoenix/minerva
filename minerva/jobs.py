@@ -25,7 +25,7 @@ async def process_job(
     job_response_lock: asyncio.Lock,
 ) -> None:
     label = urllib.parse.unquote(os.path.basename(job["url"]))
-    chunk_size: int = (job["range"][1] - job["range"][0]) + 1  # range is inclusive, so add 1 to get size
+    chunk_size: int = job["range"][1] - job["range"][0]  # range is inclusive
     last_err: Exception | None = None
     job_cache.set(job)
     display.job_start(job, label)
