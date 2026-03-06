@@ -10,7 +10,6 @@ import httpx
 import humanize
 from rich import box
 from rich.console import Console, Group
-from rich.markup import escape
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text

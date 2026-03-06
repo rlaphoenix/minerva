@@ -169,7 +169,7 @@ async def worker_loop(
                         seen_ids.add(job["file_id"])
 
                     job["chunk_id"] = chunk_id
-                    job["size"] = (job["range"][1] - job["range"][0])
+                    job["size"] = job["range"][1] - job["range"][0]
 
                     if job.get("size"):
                         filename = Path(urlparse(unquote(job["url"])).path).name
