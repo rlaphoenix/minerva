@@ -1,49 +1,52 @@
+import struct
+from dataclasses import dataclass, field
+from io import BytesIO
 from typing import Any
 
 
-class PayloadStruct:
-    def __init__(self, buffer: bytes | None = None):
-        self._buffer = buffer or bytes()
-        self._pos = 0
+def write_u8(buf: BytesIO, value: int) -> None:
+    buf.write(struct.pack("<B", value))
 
-    def add_string(self, string: str) -> None:
-        self._buffer += len(string).to_bytes(4, "little", signed=False)
-        self._buffer += string.encode("utf8")
-        self._pos = len(self._buffer) - 1
 
-    def get_string(self) -> str:
-        data = self._buffer[self._pos : self._pos + 4]
-        length = int.from_bytes(data, "little", signed=False)
-        self._pos += 4 + length
-        return self._buffer[self._pos - length : self._pos].decode("utf8")
+def write_u32(buf: BytesIO, value: int) -> None:
+    buf.write(struct.pack("<I", value))
 
-    def add_bytes(self, data: bytes) -> None:
-        self._buffer += len(data).to_bytes(4, "little", signed=False)
-        self._buffer += data
-        self._pos = len(self._buffer) - 1
 
-    def get_bytes(self) -> bytes:
-        data = self._buffer[self._pos : self._pos + 4]
-        length = int.from_bytes(data, "little", signed=False)
-        self._pos += 4 + length
-        return self._buffer[self._pos - length : self._pos]
+def write_u64(buf: BytesIO, value: int) -> None:
+    buf.write(struct.pack("<Q", value))
 
-    def add_integer(self, integer: int) -> None:
-        self._buffer += integer.to_bytes(4, "little", signed=False)
 
-    def get_integer(self) -> int:
-        self._pos += 4
-        return int.from_bytes(self._buffer[self._pos - 4 : self._pos], "little", signed=False)
+def read_u8(buf: BytesIO) -> int:
+    return struct.unpack("<B", buf.read(1))[0]
 
-    def get_buffer(self) -> bytes:
-        return self._buffer
 
-    def add_byte(self, integer: int) -> None:
-        self._buffer += integer.to_bytes(1, "little", signed=False)
+def read_u32(buf: BytesIO) -> int:
+    return struct.unpack("<I", buf.read(4))[0]
 
-    def get_byte(self) -> int:
-        self._pos += 1
-        return self._buffer[self._pos - 1]
+
+def read_u64(buf: BytesIO) -> int:
+    return struct.unpack("<Q", buf.read(8))[0]
+
+
+def write_string(buf: BytesIO, value: str) -> None:
+    data = value.encode("utf-8")
+    write_u32(buf, len(data))
+    buf.write(data)
+
+
+def read_string(buf: BytesIO) -> str:
+    length = read_u32(buf)
+    return buf.read(length).decode("utf-8")
+
+
+def write_bytes(buf: BytesIO, value: bytes) -> None:
+    write_u32(buf, len(value))
+    buf.write(value)
+
+
+def read_bytes(buf: BytesIO) -> bytes:
+    length = read_u32(buf)
+    return buf.read(length)
 
 
 class WSMessageType:
@@ -60,79 +63,216 @@ class WSMessageType:
 
 class WSMessage:
     def __init__(self, type: int, payload: dict[str, Any]):
-        self._type = type
+        self.TYPE = type
         self._payload = payload
 
     def get_type(self) -> int:
-        return self._type
-
-    def get_payload(self) -> dict[str, Any]:
-        return self._payload
+        return self.TYPE
 
     def encode(self) -> bytes:
-        encoded = PayloadStruct()
-        encoded.add_byte(self._type)
-        if self._type == WSMessageType.REGISTER:
-            encoded.add_integer(self._payload["version"])
-            encoded.add_integer(self._payload["max_concurrent"])
-            encoded.add_string(self._payload["access_token"])
-        if self._type == WSMessageType.UPLOAD_SUBCHUNK:
-            encoded.add_string(self._payload["chunk_id"])
-            encoded.add_string(self._payload["file_id"])
-            encoded.add_bytes(self._payload["payload"])
-        if self._type == WSMessageType.GET_CHUNKS:
-            encoded.add_integer(self._payload["count"])
-        if self._type == WSMessageType.DETACH_CHUNK:
-            encoded.add_string(self._payload["chunk_id"])
-        if self._type == WSMessageType.REGISTER_RESPONSE:
-            encoded.add_string(self._payload["worker_id"])
-        if self._type == WSMessageType.CHUNK_RESPONSE:
-            encoded.add_integer(len(self._payload))
-            for chunk_id in self._payload:
-                encoded.add_string(chunk_id)
-                encoded.add_string(self._payload[chunk_id]["file_id"])
-                encoded.add_string(self._payload[chunk_id]["url"])
-                encoded.add_integer(self._payload[chunk_id]["range"][0])
-                encoded.add_integer(self._payload[chunk_id]["range"][1])
-        if self._type == WSMessageType.ERROR_RESPONSE or self._type == WSMessageType.OK_RESPONSE:
-            encoded.add_integer(len(self._payload))
-            for key in self._payload:
-                encoded.add_string(key)
-                encoded.add_string(self._payload[key])
-        return encoded.get_buffer()
+        raise NotImplementedError()
 
     @staticmethod
-    def decode(encoded: bytes) -> "WSMessage":
-        struct = PayloadStruct(encoded)
-        type = struct.get_byte()
-        payload: dict[str, Any] = {}
-        if type == WSMessageType.REGISTER:
-            payload["version"] = struct.get_integer()
-            payload["max_concurrent"] = struct.get_integer()
-            payload["access_token"] = struct.get_string()
-        if type == WSMessageType.UPLOAD_SUBCHUNK:
-            payload["chunk_id"] = struct.get_string()
-            payload["file_id"] = struct.get_string()
-            payload["payload"] = struct.get_bytes()
-        if type == WSMessageType.GET_CHUNKS:
-            payload["count"] = struct.get_integer()
-        if type == WSMessageType.DETACH_CHUNK:
-            payload["chunk_id"] = struct.get_string()
-        if type == WSMessageType.REGISTER_RESPONSE:
-            payload["worker_id"] = struct.get_string()
-        if type == WSMessageType.CHUNK_RESPONSE:
-            payload_length = struct.get_integer()
-            for i in range(payload_length):
-                chunk_id = struct.get_string()
-                file_id = struct.get_string()
-                url = struct.get_string()
-                start = struct.get_integer()
-                end = struct.get_integer()
-                payload[chunk_id] = {"file_id": file_id, "url": url, "range": [start, end]}
-        if type == WSMessageType.ERROR_RESPONSE or type == WSMessageType.OK_RESPONSE:
-            payload_length = struct.get_integer()
-            for _ in range(payload_length):
-                key = struct.get_string()
-                value = struct.get_string()
-                payload[key] = value
-        return WSMessage(type, payload)
+    def decode(buf: BytesIO) -> "WSMessage":
+        raise NotImplementedError()
+
+
+@dataclass
+class RegisterMessage(WSMessage):
+    version: int
+    max_concurrent: int
+    access_token: str
+
+    TYPE = WSMessageType.REGISTER
+
+    def encode(self) -> bytes:
+        buf = BytesIO()
+
+        write_u8(buf, self.TYPE)
+        write_u32(buf, self.version)
+        write_u32(buf, self.max_concurrent)
+        write_string(buf, self.access_token)
+
+        return buf.getvalue()
+
+    @classmethod
+    def decode(cls, buf: BytesIO) -> "RegisterMessage":
+        return cls(version=read_u32(buf), max_concurrent=read_u32(buf), access_token=read_string(buf))
+
+
+@dataclass
+class UploadSubchunkMessage(WSMessage):
+    chunk_id: str
+    file_id: str
+    payload: bytes
+
+    TYPE = WSMessageType.UPLOAD_SUBCHUNK
+
+    def encode(self) -> bytes:
+        buf = BytesIO()
+        write_u8(buf, self.TYPE)
+        write_string(buf, self.chunk_id)
+        write_string(buf, self.file_id)
+        write_bytes(buf, self.payload)
+        return buf.getvalue()
+
+    @classmethod
+    def decode(cls, buf: BytesIO) -> "UploadSubchunkMessage":
+        return cls(
+            chunk_id=read_string(buf),
+            file_id=read_string(buf),
+            payload=read_bytes(buf),
+        )
+
+
+@dataclass
+class GetChunksMessage(WSMessage):
+    count: int
+
+    TYPE = WSMessageType.GET_CHUNKS
+
+    def encode(self) -> bytes:
+        buf = BytesIO()
+        write_u8(buf, self.TYPE)
+        write_u32(buf, self.count)
+        return buf.getvalue()
+
+    @classmethod
+    def decode(cls, buf: BytesIO) -> "GetChunksMessage":
+        return cls(count=read_u32(buf))
+
+
+@dataclass
+class DetachChunkMessage(WSMessage):
+    chunk_id: str
+
+    TYPE = WSMessageType.DETACH_CHUNK
+
+    def encode(self) -> bytes:
+        buf = BytesIO()
+        write_u8(buf, self.TYPE)
+        write_string(buf, self.chunk_id)
+        return buf.getvalue()
+
+    @classmethod
+    def decode(cls, buf: BytesIO) -> "DetachChunkMessage":
+        return cls(chunk_id=read_string(buf))
+
+
+@dataclass
+class RegisterResponseMessage(WSMessage):
+    worker_id: str
+
+    TYPE = WSMessageType.REGISTER_RESPONSE
+
+    def encode(self) -> bytes:
+        buf = BytesIO()
+        write_u8(buf, self.TYPE)
+        write_string(buf, self.worker_id)
+        return buf.getvalue()
+
+    @classmethod
+    def decode(cls, buf: BytesIO) -> "RegisterResponseMessage":
+        return cls(worker_id=read_string(buf))
+
+
+@dataclass
+class ChunkInfo:
+    chunk_id: str
+    file_id: str  # TODO: INT or STR?
+    url: str
+    start: int
+    end: int
+
+
+@dataclass
+class ChunkResponseMessage(WSMessage):
+    chunks: list[ChunkInfo]
+
+    TYPE = WSMessageType.CHUNK_RESPONSE
+
+    def encode(self) -> bytes:
+        buf = BytesIO()
+        write_u8(buf, self.TYPE)
+        write_u32(buf, len(self.chunks))
+        for chunk in self.chunks:
+            write_string(buf, chunk.chunk_id)
+            write_string(buf, chunk.file_id)  # TODO: INT or STR?
+            write_string(buf, chunk.url)
+            write_u64(buf, chunk.start)
+            write_u64(buf, chunk.end)
+        return buf.getvalue()
+
+    @classmethod
+    def decode(cls, buf: BytesIO) -> "ChunkResponseMessage":
+        count = read_u32(buf)
+        chunks = []
+        for _ in range(count):
+            chunk_id = read_string(buf)
+            file_id = read_string(buf)
+            url = read_string(buf)
+            start = read_u64(buf)
+            end = read_u64(buf)
+            chunks.append(ChunkInfo(chunk_id, file_id, url, start, end))
+        return cls(chunks=chunks)
+
+
+@dataclass
+class KeyValueResponseMessage(WSMessage):
+    TYPE: int = field(default_factory=int, init=False)
+    values: dict[str, str] = field(default_factory=dict)
+
+    def encode(self) -> bytes:
+        buf = BytesIO()
+        write_u8(buf, self.TYPE)
+        # write_u32(buf, len(self.values))
+        for k, v in self.values.items():
+            write_string(buf, k)
+            write_string(buf, v)
+        return buf.getvalue()
+
+    @classmethod
+    def decode(cls, buf: BytesIO) -> "KeyValueResponseMessage":
+        count = read_u32(buf)
+        values = {}
+        for _ in range(count):
+            k = read_string(buf)
+            v = read_string(buf)
+            values[k] = v
+        return cls(values=values)
+
+
+class ErrorResponseMessage(KeyValueResponseMessage):
+    TYPE = WSMessageType.ERROR_RESPONSE
+
+
+class OkResponseMessage(KeyValueResponseMessage):
+    TYPE = WSMessageType.OK_RESPONSE
+
+
+MESSAGE_TYPES = {
+    WSMessageType.REGISTER: RegisterMessage,
+    WSMessageType.UPLOAD_SUBCHUNK: UploadSubchunkMessage,
+    WSMessageType.GET_CHUNKS: GetChunksMessage,
+    WSMessageType.DETACH_CHUNK: DetachChunkMessage,
+    WSMessageType.REGISTER_RESPONSE: RegisterResponseMessage,
+    WSMessageType.CHUNK_RESPONSE: ChunkResponseMessage,
+    WSMessageType.ERROR_RESPONSE: ErrorResponseMessage,
+    WSMessageType.OK_RESPONSE: OkResponseMessage,
+}
+
+
+def decode_message(data: bytes) -> WSMessage:
+    buf = BytesIO(data)
+
+    msg_type = read_u8(buf)
+
+    cls: type[WSMessage] | None = MESSAGE_TYPES.get(msg_type)
+    if not cls:
+        raise ValueError(f"Unknown message type {msg_type}")
+
+    return cls.decode(buf)
+
+
+def encode_message(msg: WSMessage) -> bytes:
+    return msg.encode()

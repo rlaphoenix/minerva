@@ -3,12 +3,12 @@ from pathlib import Path
 
 # servers/endpoints
 SERVER_URL = os.environ.get("MINERVA_SERVER", "https://firehose.minerva-archive.org")
+SERVER_VERSION: int = 4
 CALLBACK_ENDPOINT = "/code"
 WORKER_ENDPOINT = "/worker"
 
 # vesioning and identity
-VERSION: int = 3  # TODO: Use package version instead of hardcoding
-USER_AGENT = f"HyperscrapeWorker/v{VERSION} (Created by Hackerdude for Minerva)"
+USER_AGENT = f"HyperscrapeWorker/v{SERVER_VERSION} (Created by Hackerdude for Minerva)"
 
 # auth
 OAUTH_URL = "https://discord.com/oauth2/authorize?client_id=1478862142793977998&response_type=code&redirect_uri={redirect_uri}&scope=identify"

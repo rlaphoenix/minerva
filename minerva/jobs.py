@@ -10,7 +10,7 @@ from websockets.connection import Connection
 
 from minerva.console import WorkerDisplay, console
 from minerva.constants import RETRY_DELAY, SUBCHUNK_SIZE, USER_AGENT
-from minerva.ws_message import WSMessage, WSMessageType
+from minerva.ws_message import ErrorResponseMessage, OkResponseMessage, UploadSubchunkMessage, WSMessage, WSMessageType
 
 
 async def process_job(
@@ -52,7 +52,6 @@ async def process_job(
                             return
 
                         downloaded += len(data_chunk)
-                        is_downloaded = downloaded >= chunk_size
                         display.job_update(
                             file_id=job["file_id"],
                             status="OK",
@@ -67,23 +66,18 @@ async def process_job(
                             job_response_futures[job["chunk_id"]] = future
                         async with lock:
                             await server.send(
-                                WSMessage(
-                                    WSMessageType.UPLOAD_SUBCHUNK,
-                                    {"chunk_id": job["chunk_id"], "file_id": job["file_id"], "payload": data_chunk},
+                                UploadSubchunkMessage(
+                                    chunk_id=job["chunk_id"],
+                                    file_id=job["file_id"],
+                                    payload=data_chunk,
                                 ).encode()
                             )
                         ws_response: WSMessage = await future
 
-                        payload = ws_response.get_payload()
-                        if not isinstance(payload, dict):
-                            raise Exception(f"Unexpected response payload ({type(payload)}): {payload}")
-                        is_error = ws_response.get_type() != WSMessageType.OK_RESPONSE
-                        if is_downloaded and payload.get("error") in ["Chunk already complete", "Unknown chunk"]:
-                            # TODO: these seem to happen once a file gets uploaded, needs to be double checked
-                            is_error = False
-                        if is_error:
-                            await report_job_failure(job, server, lock, job_response_futures, job_response_lock)
-                            raise Exception(f"Bad response from server: {payload}")
+                        if isinstance(ws_response, ErrorResponseMessage):
+                            raise Exception(ws_response.values["error"])
+                        if not isinstance(ws_response, OkResponseMessage):
+                            raise Exception(f"Unexpected response type: {type(ws_response)}")
 
                         uploaded += len(data_chunk)
                         display.job_update(

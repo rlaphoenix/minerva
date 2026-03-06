@@ -2,7 +2,6 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import Any
 from urllib.parse import unquote, urlparse
 
 import websockets
@@ -17,13 +16,22 @@ from minerva.constants import (
     MAX_CHUNK_COUNT,
     MYRIENT_SPEED_TEST_URL,
     RETRY_DELAY,
+    SERVER_VERSION,
     SPEED_TEST_URL,
-    VERSION,
     WORKER_ENDPOINT,
 )
 from minerva.jobs import process_job
 from minerva.speed import test_download_speed
-from minerva.ws_message import WSMessage, WSMessageType
+from minerva.ws_message import (
+    ChunkInfo,
+    ChunkResponseMessage,
+    ErrorResponseMessage,
+    GetChunksMessage,
+    OkResponseMessage,
+    RegisterMessage,
+    RegisterResponseMessage,
+    decode_message,
+)
 
 _STOP = object()
 
@@ -86,7 +94,7 @@ async def worker_loop(
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency)
     stop_event = asyncio.Event()
-    seen_ids: set[int] = set()
+    seen_ids: set[str] = set()
     seen_lock = asyncio.Lock()
     max_queue_size: int = parse_size(max_cache_size) if max_cache_size else 0
     queue_size: int = 0
@@ -134,22 +142,17 @@ async def worker_loop(
             try:
                 async with websocket_lock:
                     await websocket.send(
-                        WSMessage(
-                            WSMessageType.REGISTER,
-                            {"version": VERSION, "max_concurrent": concurrency, "access_token": token},
-                        ).encode()
+                        RegisterMessage(version=SERVER_VERSION, max_concurrent=concurrency, access_token=token).encode()
                     )
-                    response = WSMessage.decode(await websocket.recv())
-                if response.get_type() != WSMessageType.REGISTER_RESPONSE:
-                    console.print(
-                        f"[red]Error: Unable to connect to coordinator ({response.get_payload()}), retrying in {RETRY_DELAY}s...[/red]"
-                    )
-                    await asyncio.sleep(RETRY_DELAY)
-                    continue
-                worker_id = response.get_payload().get("worker_id")
+                    response = decode_message(await websocket.recv())
+                if isinstance(response, ErrorResponseMessage):
+                    raise Exception(response.values["error"])
+                if not isinstance(response, RegisterResponseMessage):
+                    raise Exception(f"Unexpected response type: {type(response)}")
+                worker_id = response.worker_id
             except Exception as e:
                 console.print(
-                    f"[red]Error: Unable to connect to coordinator ({e}), retrying in {RETRY_DELAY}s...[/red]"
+                    f"[red]Error: Unable to register with coordinator ({e}), retrying in {RETRY_DELAY}s...[/red]"
                 )
                 await asyncio.sleep(RETRY_DELAY)
             if not worker_id:
@@ -158,43 +161,41 @@ async def worker_loop(
                 await asyncio.sleep(60)
             console.print(f"[green]Connected to coordinator with ID: {worker_id}[/green]")
 
-            async def queue_jobs(jobs: dict[str, dict[str, Any]]) -> int:
+            async def queue_jobs(jobs: list[ChunkInfo]) -> int:
                 nonlocal queue_size
 
                 jobs_queued = 0
-                for chunk_id, job in jobs.items():
+                for job in jobs:
                     async with seen_lock:
-                        if job["file_id"] in seen_ids:
+                        if job.file_id in seen_ids:
                             continue
-                        seen_ids.add(job["file_id"])
+                        seen_ids.add(job.file_id)
 
-                    job["chunk_id"] = chunk_id
-                    job["size"] = job["range"][1] - job["range"][0]
-
-                    if job.get("size"):
-                        filename = Path(urlparse(unquote(job["url"])).path).name
-                        if min_job_size_bytes and (job["size"] < min_job_size_bytes):
+                    size = job.end - job.start
+                    if size:
+                        filename = Path(urlparse(unquote(job.url)).path).name
+                        if min_job_size_bytes and (size < min_job_size_bytes):
                             console.print(
                                 f"[yellow]Skipping job {filename} "
-                                f"({naturalsize(job['size'])} < "
+                                f"({naturalsize(size)} < "
                                 f"{naturalsize(min_job_size_bytes)})[/yellow]"
                             )
                             continue
-                        if max_job_size_bytes and (job["size"] > max_job_size_bytes):
+                        if max_job_size_bytes and (size > max_job_size_bytes):
                             console.print(
                                 f"[yellow]Skipping job {filename} "
-                                f"({naturalsize(job['size'])} > "
+                                f"({naturalsize(size)} > "
                                 f"{naturalsize(max_job_size_bytes)})[/yellow]"
                             )
                             continue
                         if max_queue_size:
                             async with queue_lock:
-                                if (queue_size + job["size"]) > max_queue_size:
+                                if (queue_size + size) > max_queue_size:
                                     console.print(
                                         f"[yellow]Skipping job {filename}  ({max_queue_size} cache size limit)[/yellow]"
                                     )
                                     continue
-                                queue_size += job["size"]
+                                queue_size += size
 
                     await queue.put(job)
                     jobs_queued += 1
@@ -221,14 +222,16 @@ async def worker_loop(
                     if fetch_count > 0:
                         try:
                             async with websocket_lock:
-                                await websocket.send(
-                                    WSMessage(WSMessageType.GET_CHUNKS, {"count": fetch_count}).encode()
-                                )
-                            jobs: dict[str, dict[str, Any]] = await asyncio.wait_for(
+                                await websocket.send(GetChunksMessage(count=fetch_count).encode())
+                            response: ChunkResponseMessage = await asyncio.wait_for(
                                 chunk_response_queue.get(), timeout=10
                             )
-                            if jobs:
-                                jobs_added = await queue_jobs(jobs)
+                            if isinstance(response, ErrorResponseMessage):
+                                raise Exception(response.values["error"])
+                            if not isinstance(response, ChunkResponseMessage):
+                                raise Exception(f"Unexpected response type: {type(response)}")
+                            if response.chunks:
+                                jobs_added = await queue_jobs(response.chunks)
                                 if jobs_added == 0:
                                     await asyncio.sleep(5)
                                     continue
@@ -291,26 +294,22 @@ async def worker_loop(
                 try:
                     while True:
                         raw = await websocket.recv()
-                        msg = WSMessage.decode(raw)
+                        msg = decode_message(raw)
 
                         msg_type = msg.get_type()
-                        payload = msg.get_payload()
-
-                        if msg_type == WSMessageType.CHUNK_RESPONSE:
-                            await chunk_response_queue.put(payload)
-
-                        elif msg_type == WSMessageType.ERROR_RESPONSE:
-                            console.print(f"[red]Error from server: {payload}[/red]")
-                            chunk_id = payload["chunk_id"]
+                        if isinstance(msg, ChunkResponseMessage):
+                            await chunk_response_queue.put(msg)
+                        elif isinstance(msg, ErrorResponseMessage):
+                            console.print(f"[red]Error from server: {msg}[/red]")
+                            chunk_id = msg.values["chunk_id"]
                             async with job_response_lock:
                                 future = job_response_futures.pop(chunk_id, None)
                             if future and not future.done():
                                 future.set_result(msg)
                             else:
                                 console.print(f"[yellow]Unhandled message type: {msg_type}[/yellow]")
-
-                        elif msg_type == WSMessageType.OK_RESPONSE:
-                            chunk_id = payload["chunk_id"]
+                        elif isinstance(msg, OkResponseMessage):
+                            chunk_id = msg.values["chunk_id"]
                             async with job_response_lock:
                                 future = job_response_futures.pop(chunk_id, None)
                             if future and not future.done():
