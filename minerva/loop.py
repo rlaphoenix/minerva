@@ -233,6 +233,9 @@ async def worker_loop(
                             if response.chunks:
                                 jobs_added = await queue_jobs(response.chunks)
                                 if jobs_added == 0:
+                                    console.print(
+                                        f"[yellow]Received {len(response.chunks)} jobs, but all were skipped by filters[/yellow]"
+                                    )
                                     await asyncio.sleep(5)
                                     continue
                             else:

@@ -3,7 +3,6 @@ import threading
 import time
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -15,6 +14,7 @@ from rich.table import Table
 from rich.text import Text
 
 from minerva.constants import HISTORY_LINES
+from minerva.ws_message import ChunkInfo, JobState
 
 console = Console()
 
@@ -35,7 +35,7 @@ class WorkerDisplay:
 
         # All following variables are locked by _lock
         self.history: collections.deque = collections.deque(maxlen=HISTORY_LINES)
-        self.active: dict[int, Any] = {}  # file_id -> dict
+        self.active: dict[str, tuple[ChunkInfo, JobState]] = {}
         self._lock = threading.Lock()
         self._session_start = time.monotonic()
         self._page = 0
@@ -45,28 +45,26 @@ class WorkerDisplay:
         self._username = None
         self._leaderboard_cache: tuple[int | None, int | None] | tuple[None, None] = (None, None)
 
-    def job_start(self, job: dict[str, Any], label: str) -> None:
+    def job_start(self, job: ChunkInfo, label: str) -> None:
         now = time.monotonic()
+        state = JobState(
+            label=label,
+            status="OK",
+            size=(job.end - job.start) or 0,
+            downloaded=0,
+            uploaded=0,
+            waiting=True,
+            start_time=now,
+            prev_done=0,
+            prev_time=now,
+            speed=0.0,
+        )
         with self._lock:
-            job.update(
-                dict(
-                    label=label,
-                    status="OK",
-                    size=job["size"] or 0,
-                    downloaded=0,
-                    uploaded=0,
-                    waiting=True,
-                    start_time=now,
-                    prev_done=0,
-                    prev_time=now,
-                    speed=0.0,
-                )
-            )
-            self.active[job["file_id"]] = job
+            self.active[job.file_id] = (job, state)
 
     def job_update(
         self,
-        file_id: int,
+        file_id: str,
         status: str,
         size: int | None = None,
         downloaded: int | None = None,
@@ -78,32 +76,34 @@ class WorkerDisplay:
             with self._lock:
                 if file_id not in self.active:
                     return
-                job = self.active[file_id]
+                job, state = self.active[file_id]
                 if downloaded is not None:
-                    dt = now - job["prev_time"]
+                    dt = now - state.prev_time
                     if dt >= 0.5:
-                        dd = downloaded - job["prev_done"]
-                        job["speed"] = dd / dt if dt > 0 else job["speed"]
-                        job["prev_done"] = downloaded
-                        job["prev_time"] = now
-                    job["downloaded"] = downloaded
+                        dd = downloaded - state.prev_done
+                        state.speed = dd / dt if dt > 0 else state.speed
+                        state.prev_done = downloaded
+                        state.prev_time = now
+                    state.downloaded = downloaded
                 if uploaded is not None:
-                    job["uploaded"] = uploaded
-                job["status"] = status
+                    state.uploaded = uploaded
+                state.status = status
                 if size is not None:
-                    job["size"] = size
-                job["waiting"] = waiting
+                    state.size = size
+                if waiting is not None:
+                    state.waiting = waiting
         except Exception:
             console.print_exception()
 
-    def job_done(self, file_id: int, label: str, ok: bool, note: str = "") -> None:
+    def job_done(self, file_id: str, label: str, ok: bool, note: str = "") -> None:
         with self._lock:
-            job = self.active.pop(file_id, None)
-            job["waiting"] = False
+            _, state = self.active.pop(file_id, (None, None))
+            if state:
+                state.waiting = False
             if ok:
                 self._total_done += 1
-                if job and job["size"]:
-                    self._total_bytes += job["size"]
+                if state and state.size:
+                    self._total_bytes += state.size
             else:
                 self._total_fails += 1
             icon = "[green]✓[/green]" if ok else "[red]✗[/red]"
@@ -114,10 +114,10 @@ class WorkerDisplay:
             self.history.append(entry)
 
     @staticmethod
-    def effective_speed(job: dict[str, Any]) -> int:
-        age = time.monotonic() - job["prev_time"]
+    def effective_speed(state: JobState) -> float:
+        age = time.monotonic() - state.prev_time
         decay = max(0.0, 1 - age / 3)
-        return max(0.0, job["speed"] * decay)
+        return max(0.0, state.speed * decay)
 
     def get_stats(self) -> Table:
         now = time.monotonic()
@@ -128,7 +128,7 @@ class WorkerDisplay:
             done_count = self._total_done
             fail_count = self._total_fails
             total_bytes = self._total_bytes
-            speed = sum(self.effective_speed(x) for x in snapshot)
+            speed = sum(self.effective_speed(state) for _, state in snapshot)
             rank, uploaded = self._leaderboard_cache
             username = self._username
 
@@ -221,21 +221,21 @@ class WorkerDisplay:
         table.add_column("Progress", justify="left", width=20)  # fit 14-width progress bar + percentage
         table.add_column("Uptime", justify="right", width=5)  # fit mm:ss up to 99:59
 
-        for job in visible_jobs:
+        for job, state in visible_jobs:
             try:
-                color = {"OK": "blue", "RT": "magenta"}.get(job["status"], "white")
-                size = job["size"]
-                waiting = job["waiting"]
-                speed = self.effective_speed(job)
-                elapsed = now - job["start_time"]
+                color = {"OK": "blue", "RT": "magenta"}.get(state.status, "white")
+                size = state.size
+                waiting = state.waiting
+                speed = self.effective_speed(state)
+                elapsed = now - state.start_time
                 elapsed_str = f"[dim]{int(elapsed // 60):02d}:{int(elapsed % 60):02d}[/dim]"
 
                 if not waiting:
-                    size = job["size"] or 1
+                    size = state.size or 1
                     speed_str = f"[dim]{humanize.naturalsize(speed, gnu=True)}/s[/dim]" if speed > 0 else "[dim]—[/dim]"
-                    size = max(job["size"] or 0, 1)
-                    dl = max(job.get("downloaded", 0), 0)
-                    ul = max(job.get("uploaded", 0), 0)
+                    size = max(state.size or 0, 1)
+                    dl = max(state.downloaded or 0, 0)
+                    ul = max(state.uploaded or 0, 0)
                     dl = dl - ul
                     dl_ratio = min(dl / size, 1)
                     ul_ratio = min(ul / size, 1)
@@ -254,11 +254,11 @@ class WorkerDisplay:
                     speed_str = f"[{color}]{spin} Waiting[/{color}]"
 
                     note = ""
-                    if job["status"] == "RT":
+                    if state.status == "RT":
                         note = "to retry after fail"
                     bar = f"[{color}]{note}[/{color}]"
 
-                file_str = Text(Path(urlparse(job["label"]).path).name)
+                file_str = Text(Path(urlparse(state.label).path).name)
 
                 if size:
                     size_str = humanize.naturalsize(size)

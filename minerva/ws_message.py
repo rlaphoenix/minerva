@@ -179,10 +179,24 @@ class RegisterResponseMessage(WSMessage):
 @dataclass
 class ChunkInfo:
     chunk_id: str
-    file_id: str  # TODO: INT or STR?
+    file_id: str
     url: str
     start: int
     end: int
+
+
+@dataclass
+class JobState:
+    label: str
+    status: str
+    size: int
+    downloaded: int
+    uploaded: int
+    waiting: bool
+    start_time: float
+    prev_done: int
+    prev_time: float
+    speed: float
 
 
 @dataclass
@@ -197,7 +211,7 @@ class ChunkResponseMessage(WSMessage):
         write_u32(buf, len(self.chunks))
         for chunk in self.chunks:
             write_string(buf, chunk.chunk_id)
-            write_string(buf, chunk.file_id)  # TODO: INT or STR?
+            write_string(buf, chunk.file_id)
             write_string(buf, chunk.url)
             write_u64(buf, chunk.start)
             write_u64(buf, chunk.end)
