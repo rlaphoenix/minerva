@@ -9,7 +9,7 @@ import websockets
 from websockets.connection import Connection
 
 from minerva.cache import job_cache
-from minerva.console import WorkerDisplay
+from minerva.console import WorkerDisplay, console
 from minerva.constants import RETRY_DELAY, SUBCHUNK_SIZE, USER_AGENT
 from minerva.ws_message import WSMessage, WSMessageType
 
@@ -49,7 +49,6 @@ async def process_job(
                 ):
                     response.raise_for_status()
                     async for data_chunk in response.aiter_bytes(SUBCHUNK_SIZE):
-                        # TODO: maybe make part of progress bar blue for dl, green for ul
                         if stop.is_set():
                             display.job_done(job["file_id"], label, ok=False, note="Stopping...")
                             return
@@ -59,30 +58,17 @@ async def process_job(
                             file_id=job["file_id"], status="OK", size=chunk_size, downloaded=downloaded, uploaded=uploaded, waiting=False
                         )
 
-                        # TODO: cannpt handle multiple concurrent uploads because server responses do not have an identifier
-                        # future = asyncio.get_running_loop().create_future()
-                        # async with job_response_lock:
-                        #     job_response_futures[job["chunk_id"]] = future
-                        # async with lock:
-                        #     await server.send(
-                        #         WSMessage(
-                        #             WSMessageType.UPLOAD_SUBCHUNK,
-                        #             {"chunk_id": job["chunk_id"], "file_id": job["file_id"], "payload": data_chunk},
-                        #         ).encode()
-                        #     )
-                        # ws_response: WSMessage = await future
-
                         future = asyncio.get_running_loop().create_future()
+                        async with job_response_lock:
+                            job_response_futures[job["chunk_id"]] = future
                         async with lock:
-                            async with job_response_lock:
-                                job_response_futures[job["chunk_id"]] = future
                             await server.send(
                                 WSMessage(
                                     WSMessageType.UPLOAD_SUBCHUNK,
                                     {"chunk_id": job["chunk_id"], "file_id": job["file_id"], "payload": data_chunk},
                                 ).encode()
                             )
-                            ws_response: WSMessage = await future
+                        ws_response: WSMessage = await future
 
                         payload = ws_response.get_payload()
                         if not isinstance(payload, dict):
@@ -115,8 +101,35 @@ async def process_job(
                     display.job_done(
                         job["file_id"], label, ok=False, note=f"Job Failed ({retries} attempts): {str(last_err)}"
                     )
+            except TimeoutError as e:
+                last_err = e
+                if attempt < retries:
+                    display.job_update(job["file_id"], "RT", downloaded=0, uploaded=0, waiting=True)
+                    await asyncio.sleep(RETRY_DELAY * attempt)
+                else:
+                    display.job_done(
+                        job["file_id"], label, ok=False, note=f"Job Failed ({retries} attempts): {str(last_err)}"
+                    )
+                    await report_job_failure(job, server, lock, job_response_futures, job_response_lock)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    display.job_done(job["file_id"], label, ok=False, note="Not Found (404)")
+                    return
+                print(f"HTTP error while processing job {job['file_id']}: {e}")
+                last_err = e
+                if attempt < retries:
+                    display.job_update(job["file_id"], "RT", downloaded=0, uploaded=0, waiting=True)
+                    await asyncio.sleep(RETRY_DELAY * attempt)
+                else:
+                    display.job_done(
+                        job["file_id"], label, ok=False, note=f"Job Failed ({retries} attempts): {str(last_err)}"
+                    )
+                    await report_job_failure(job, server, lock, job_response_futures, job_response_lock)
             except Exception as e:
-                print(f"Error while processing job {job['file_id']}: {e}")
+                if str(e):
+                    print(f"Error while processing job {job['file_id']}: {e}")
+                else:
+                    console.print_exception()
                 last_err = e
                 if attempt < retries:
                     display.job_update(job["file_id"], "RT", downloaded=0, uploaded=0, waiting=True)

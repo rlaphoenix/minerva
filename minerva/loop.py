@@ -323,21 +323,22 @@ async def worker_loop(
 
                         elif msg_type == WSMessageType.ERROR_RESPONSE:
                             console.print(f"[red]Error from server: {payload}[/red]")
+                            chunk_id = payload["chunk_id"]
                             async with job_response_lock:
-                                future = None
-                                if job_response_futures:
-                                    _, future = job_response_futures.popitem()
+                                future = job_response_futures.pop(chunk_id, None)
                             if future and not future.done():
                                 future.set_result(msg)
+                            else:
+                                console.print(f"[yellow]Unhandled message type: {msg_type}[/yellow]")
 
                         elif msg_type == WSMessageType.OK_RESPONSE:
+                            chunk_id = payload["chunk_id"]
                             async with job_response_lock:
-                                future = None
-                                if job_response_futures:
-                                    _, future = job_response_futures.popitem()
+                                future = job_response_futures.pop(chunk_id, None)
                             if future and not future.done():
                                 future.set_result(msg)
-
+                            else:
+                                console.print(f"[yellow]Unhandled message type: {msg_type}[/yellow]")
                         else:
                             console.print(f"[yellow]Unhandled message type: {msg_type}[/yellow]")
                 except websockets.ConnectionClosed as e:
