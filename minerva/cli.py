@@ -49,7 +49,6 @@ def status() -> None:
 @click.option("--server", default=SERVER_URL, help="Server URL")
 @click.option("-c", "--concurrency", default=CONCURRENCY, help="Concurrent jobs")
 @click.option("-r", "--retries", default=MAX_RETRIES, help="Max amount of attempts for each job")
-@click.option("-m", "--max-cache-size", default="", help="Max amount of storage to use at any given moment")
 @click.option("--min-job-size", default="", help="Skip jobs for files smaller than a given size")
 @click.option("--max-job-size", default="", help="Skip jobs for files larger than a given size")
 def run(
@@ -57,7 +56,6 @@ def run(
     server: str,
     concurrency: int,
     retries: int,
-    max_cache_size: str,
     min_job_size: str,
     max_job_size: str,
 ) -> None:
@@ -70,10 +68,6 @@ def run(
         console.print("[red]Could not login, please try again...")
         return
 
-    # make sure max cache size isn't set too small or it will constantly ask for jobs
-    if max_cache_size and parse_size(max_cache_size) < parse_size("10GiB"):
-        console.print("[red]The --max-cache-size cannot be smaller than 10GiB[/red]")
-
     # start main loop
     asyncio.run(
         worker_loop(
@@ -81,7 +75,6 @@ def run(
             server,
             concurrency,
             retries,
-            max_cache_size,
             min_job_size,
             max_job_size,
         )

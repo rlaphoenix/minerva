@@ -64,7 +64,6 @@ async def worker_loop(
     server: str,
     concurrency: int,
     retries: int,
-    max_cache_size: str,
     min_job_size: str,
     max_job_size: str,
 ) -> None:
@@ -87,7 +86,6 @@ async def worker_loop(
     console.print(f"Server URL:     [dim]{server}[/dim]")
     console.print(f"Concurrency:    [dim]{concurrency}[/dim]")
     console.print(f"Retries:        [dim]{retries}[/dim]")
-    console.print(f"Max cache size: [dim]{naturalsize(parse_size(max_cache_size)) if max_cache_size else 'N/A'}[/dim]")
     console.print(f"Min job size:   [dim]{naturalsize(parse_size(min_job_size)) if min_job_size else 'N/A'}[/dim]")
     console.print(f"Max job size:   [dim]{naturalsize(parse_size(max_job_size)) if max_job_size else 'N/A'}[/dim]")
     console.print()
@@ -96,14 +94,9 @@ async def worker_loop(
     stop_event = asyncio.Event()
     seen_ids: set[str] = set()
     seen_lock = asyncio.Lock()
-    max_queue_size: int = parse_size(max_cache_size) if max_cache_size else 0
-    queue_size: int = 0
     display = WorkerDisplay()
     queue_lock = asyncio.Lock()
     websocket_lock = asyncio.Lock()
-
-    cache_available = asyncio.Event()
-    cache_available.set()
 
     min_job_size_bytes = parse_size(min_job_size) if min_job_size else None
     max_job_size_bytes = parse_size(max_job_size) if max_job_size else None
@@ -162,8 +155,6 @@ async def worker_loop(
             console.print(f"[green]Connected to coordinator with ID: {worker_id}[/green]")
 
             async def queue_jobs(jobs: list[ChunkInfo]) -> int:
-                nonlocal queue_size
-
                 jobs_queued = 0
                 for job in jobs:
                     async with seen_lock:
@@ -188,14 +179,6 @@ async def worker_loop(
                                 f"{naturalsize(max_job_size_bytes)})[/yellow]"
                             )
                             continue
-                        if max_queue_size:
-                            async with queue_lock:
-                                if (queue_size + size) > max_queue_size:
-                                    console.print(
-                                        f"[yellow]Skipping job {filename}  ({max_queue_size} cache size limit)[/yellow]"
-                                    )
-                                    continue
-                                queue_size += size
 
                     await queue.put(job)
                     jobs_queued += 1
@@ -206,13 +189,7 @@ async def worker_loop(
                 """Producer task to keep the queue filled with jobs from the server."""
                 while not stop_event.is_set():
                     async with queue_lock:
-                        bloated = max_queue_size and (queue_size >= max_queue_size)
                         free_slots = max(0, queue.maxsize - queue.qsize())
-
-                    if bloated:
-                        cache_available.clear()
-                        await cache_available.wait()
-                        continue
 
                     if queue.qsize() >= queue.maxsize // 2:
                         await asyncio.sleep(1)
@@ -254,7 +231,6 @@ async def worker_loop(
 
             async def worker() -> None:
                 """Worker task to process jobs from the queue."""
-                nonlocal queue_size
                 while True:
                     try:
                         job = await queue.get()
@@ -275,13 +251,8 @@ async def worker_loop(
                             job_response_lock=job_response_lock,
                         )
                     finally:
-                        if max_queue_size and job.get("size"):
-                            async with queue_lock:
-                                queue_size -= job["size"]
-                                if queue_size < max_queue_size:
-                                    cache_available.set()
                         async with seen_lock:
-                            seen_ids.discard(job["file_id"])
+                            seen_ids.discard(job.file_id)
                         queue.task_done()
 
             async def stop_workers() -> None:
