@@ -23,7 +23,6 @@ from minerva.constants import (
 )
 from minerva.jobs import process_job
 from minerva.speed import test_download_speed
-from minerva.worker_thread import WorkerThread
 from minerva.ws_message import WSMessage, WSMessageType
 
 _STOP = object()
@@ -50,16 +49,6 @@ async def update_rank_loop(display: WorkerDisplay) -> None:
             # Just in case one error misses a catch → asyncio voids it otherwise
             console.print_exception()
         await asyncio.sleep(20)
-
-
-async def stop_all_workers(worker_threads: list[WorkerThread] | dict[str, WorkerThread]) -> None:
-    if isinstance(worker_threads, dict):
-        for id in list(worker_threads.keys()):
-            worker_threads[id].stop()
-            del worker_threads[id]
-    else:
-        for worker in worker_threads:
-            worker.stop()
 
 
 async def worker_loop(

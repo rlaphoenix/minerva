@@ -55,7 +55,12 @@ async def process_job(
 
                         downloaded += len(data_chunk)
                         display.job_update(
-                            file_id=job["file_id"], status="OK", size=chunk_size, downloaded=downloaded, uploaded=uploaded, waiting=False
+                            file_id=job["file_id"],
+                            status="OK",
+                            size=chunk_size,
+                            downloaded=downloaded,
+                            uploaded=uploaded,
+                            waiting=False,
                         )
 
                         future = asyncio.get_running_loop().create_future()

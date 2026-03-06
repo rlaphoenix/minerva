@@ -247,7 +247,9 @@ class WorkerDisplay:
                         ul_w = max(0, bar_w - dl_w)
                     remaining = bar_w - dl_w - ul_w
                     pct = (ul / size) * 100
-                    bar = f"[green]{'█' * ul_w}[/green][blue]{'█' * dl_w}[/blue][dim]{'░' * remaining}[/dim] {pct:4.0f}%"
+                    bar = (
+                        f"[green]{'█' * ul_w}[/green][blue]{'█' * dl_w}[/blue][dim]{'░' * remaining}[/dim] {pct:4.0f}%"
+                    )
                 else:
                     spin = _SPINNER[int(now * 8) % len(_SPINNER)]
                     speed_str = f"[{color}]{spin} Waiting[/{color}]"
