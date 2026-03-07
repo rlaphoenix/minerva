@@ -1,3 +1,4 @@
+import keylib
 import webbrowser
 from urllib.parse import quote
 
@@ -8,19 +9,10 @@ from minerva.constants import CALLBACK_ENDPOINT, IS_DOCKER, OAUTH_URL, TOKEN_FIL
 
 
 def save_token(token: str) -> None:
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(token)
-
+    keylib.set_password("Minerva-dnt", "na", token)
 
 def load_token() -> str | None:
-    if TOKEN_FILE.exists():
-        token = TOKEN_FILE.read_text().strip()
-        if token:
-            if not verify_token(token):
-                TOKEN_FILE.unlink()
-                raise ValueError("Authorization is invalid or has expired. Please run 'minerva login' again.")
-            return token
-    return None
+    return keylib.get_password("Minerva-dnt", "na")
 
 
 def verify_token(token: str) -> bool:
