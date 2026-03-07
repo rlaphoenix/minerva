@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY pyproject.toml uv.lock* README.md /app/
 COPY . /app
 
-RUN uv venv
+RUN uv sync --all-groups --all-extras
 RUN uv pip install -e .
 
 ENV IS_DOCKER=true PYTHONUNBUFFERED=1
