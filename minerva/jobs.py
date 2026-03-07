@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import urllib.parse
 
@@ -7,7 +8,7 @@ import humanize
 import websockets
 from websockets.connection import Connection
 
-from minerva.console import WorkerDisplay, console
+from minerva.console import WorkerDisplay
 from minerva.constants import RETRY_DELAY, SUBCHUNK_SIZE, USER_AGENT
 from minerva.ws_message import (
     ChunkInfo,
@@ -22,23 +23,28 @@ from minerva.ws_message import (
 async def process_job(
     job: ChunkInfo,
     server: Connection,
+    worker_id: str,
     retries: int,
     display: WorkerDisplay,
     lock: asyncio.Lock,
-    stop: asyncio.Event,
-    job_response_futures: dict[str, asyncio.Future],
-    job_response_lock: asyncio.Lock,
+    reconnect_event: asyncio.Event,
+    ctrl_c_event: asyncio.Event,
+    websocket_futures: dict[str, asyncio.Future],
+    websocket_futures_lock: asyncio.Lock,
 ) -> None:
-    label = urllib.parse.unquote(os.path.basename(job.url))
-    chunk_size: int = job.end - job.start  # range is inclusive
-    last_err: Exception | None = None
+    if ctrl_c_event.is_set() or reconnect_event.is_set():
+        return
 
-    display.job_start(job, label)
+    log = logging.getLogger(__file__)
+    label = urllib.parse.unquote(os.path.basename(job.url))
+    await display.job_start(job, label, worker_id)
+
+    chunk_size: int = job.end - job.start  # range is inclusive
     for attempt in range(1, retries + 1):
-        if stop.is_set():
-            display.job_done(job.file_id, label, ok=False, note="Stopping...")
+        if ctrl_c_event.is_set() or reconnect_event.is_set():
+            await display.job_done(job.file_id, label, ok=False, note="Stopping...")
             return
-        display.job_update(job.file_id, "OK", size=chunk_size, downloaded=0, uploaded=0, waiting=False)
+        await display.job_update(job.file_id, "OK", size=chunk_size, downloaded=0, uploaded=0, waiting=False)
         downloaded = 0
         uploaded = 0
         async with httpx.AsyncClient() as client:
@@ -54,11 +60,11 @@ async def process_job(
                 ) as response:
                     response.raise_for_status()
                     async for data_chunk in response.aiter_bytes(SUBCHUNK_SIZE):
-                        if stop.is_set():
-                            return
+                        if ctrl_c_event.is_set() or reconnect_event.is_set():
+                            raise websockets.exceptions.WebSocketException("Stop event set, stopping job")
 
                         downloaded += len(data_chunk)
-                        display.job_update(
+                        await display.job_update(
                             file_id=job.file_id,
                             status="OK",
                             size=chunk_size,
@@ -68,8 +74,8 @@ async def process_job(
                         )
 
                         future = asyncio.get_running_loop().create_future()
-                        async with job_response_lock:
-                            job_response_futures[job.chunk_id] = future
+                        async with websocket_futures_lock:
+                            websocket_futures[job.chunk_id] = future
                         async with lock:
                             await server.send(
                                 UploadSubchunkMessage(
@@ -86,7 +92,7 @@ async def process_job(
                             raise Exception(f"Unexpected response type: {type(ws_response)}")
 
                         uploaded += len(data_chunk)
-                        display.job_update(
+                        await display.job_update(
                             file_id=job.file_id,
                             status="OK",
                             size=chunk_size,
@@ -94,71 +100,60 @@ async def process_job(
                             uploaded=uploaded,
                             waiting=False,
                         )
-                    display.job_done(
+                    await display.job_done(
                         job.file_id, label, ok=True, note=humanize.naturalsize(chunk_size) if chunk_size else ""
                     )
                     break
-            except websockets.exceptions.WebSocketException as e:
-                print(f"Websocket error while processing job {job.file_id}: {e}")
-                last_err = e
-                if attempt < retries:
-                    display.job_update(job.file_id, "RT", downloaded=0, uploaded=0, waiting=True)
-                    await asyncio.sleep(RETRY_DELAY * attempt)
-                else:
-                    display.job_done(
-                        job.file_id, label, ok=False, note=f"Job Failed ({retries} attempts): {str(last_err)}"
-                    )
-            except httpx.TimeoutException as e:
-                last_err = e
-                if attempt < retries:
-                    display.job_update(job.file_id, "RT", downloaded=0, uploaded=0, waiting=True)
-                    await asyncio.sleep(RETRY_DELAY * attempt)
-                else:
-                    display.job_done(
-                        job.file_id, label, ok=False, note=f"Job Failed ({retries} attempts): {str(last_err)}"
-                    )
-                    await report_job_failure(job, server, lock, job_response_futures, job_response_lock)
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 404:
-                    display.job_done(job.file_id, label, ok=False, note="Not Found (404)")
+            except (websockets.exceptions.WebSocketException, asyncio.CancelledError):
+                # we cannot keep downloading with a lost websocket connection
+                # signal that we need to reconnect, loop, and let the code above mark as fail
+                reconnect_event.set()
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404:
+                    await display.job_done(job.file_id, label, ok=False, note="Not Found (404)")
                     return
-                print(f"HTTP error while processing job {job.file_id}: {e}")
-                last_err = e
                 if attempt < retries:
-                    display.job_update(job.file_id, "RT", downloaded=0, uploaded=0, waiting=True)
+                    await display.job_update(job.file_id, "RT", downloaded=0, uploaded=0, waiting=True)
+                    if ctrl_c_event.is_set() or reconnect_event.is_set():
+                        continue
                     await asyncio.sleep(RETRY_DELAY * attempt)
                 else:
-                    display.job_done(
-                        job.file_id, label, ok=False, note=f"Job Failed ({retries} attempts): {str(last_err)}"
+                    await display.job_done(
+                        job.file_id, label, ok=False, note=f"Job Failed ({retries} attempts, httpx error): {str(e)}"
                     )
-                    await report_job_failure(job, server, lock, job_response_futures, job_response_lock)
-            except Exception as e:
-                if str(e):
-                    print(f"Error while processing job {job.file_id}: {e}")
-                else:
-                    console.print_exception()
-                last_err = e
+                    if ctrl_c_event.is_set() or reconnect_event.is_set():
+                        continue
+                    await report_job_failure(job, server, lock, websocket_futures, websocket_futures_lock)
+            except (Exception, BaseException) as e:
+                log.exception(f"Unexpected exception while processing job {job.file_id}: {e}", exc_info=True)
                 if attempt < retries:
-                    display.job_update(job.file_id, "RT", downloaded=0, uploaded=0, waiting=True)
+                    await display.job_update(job.file_id, "RT", downloaded=0, uploaded=0, waiting=True)
+                    if ctrl_c_event.is_set() or reconnect_event.is_set():
+                        continue
                     await asyncio.sleep(RETRY_DELAY * attempt)
                 else:
-                    display.job_done(
-                        job.file_id, label, ok=False, note=f"Job Failed ({retries} attempts): {str(last_err)}"
+                    await display.job_done(
+                        job.file_id,
+                        label,
+                        ok=False,
+                        note=f"Job Failed ({retries} attempts, unexpected error): {str(e)}",
                     )
-                    await report_job_failure(job, server, lock, job_response_futures, job_response_lock)
+                    if ctrl_c_event.is_set() or reconnect_event.is_set():
+                        continue
+                    await report_job_failure(job, server, lock, websocket_futures, websocket_futures_lock)
 
 
 async def report_job_failure(
     job: ChunkInfo,
     server: Connection,
     lock: asyncio.Lock,
-    job_response_futures: dict[str, asyncio.Future],
-    job_response_lock: asyncio.Lock,
+    websocket_futures: dict[str, asyncio.Future],
+    websocket_futures_lock: asyncio.Lock,
 ) -> None:
     try:
         future = asyncio.get_running_loop().create_future()
-        async with job_response_lock:
-            job_response_futures[job.chunk_id] = future
+        async with websocket_futures_lock:
+            websocket_futures[job.chunk_id] = future
         async with lock:
             await server.send(WSMessage(WSMessageType.DETACH_CHUNK, {"chunk_id": job.chunk_id}).encode())
         await future  # absorb unwanted response

@@ -1,6 +1,6 @@
-import base64
+import asyncio
 import collections
-import threading
+import logging
 import time
 from json import JSONDecodeError
 from pathlib import Path
@@ -31,6 +31,8 @@ class WorkerDisplay:
       • session stats footer
     """
 
+    log = logging.getLogger(__file__)
+
     def __init__(self) -> None:
         self._leaderboard_last_fetch = 0.0  # Only use in update_rank_loop (update_rank)
 
@@ -39,19 +41,40 @@ class WorkerDisplay:
         self.active: dict[str, tuple[ChunkInfo, JobState]] = {}
         self.connected: bool = False
         self.downtime: float = 0.0
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
         self._session_start = time.monotonic()
         self._page = 0
         self._total_done = 0
         self._total_fails = 0
+        self._total_stops = 0
         self._total_bytes = 0
         self._username = None
         self._discord_id = None
         self._leaderboard_cache: tuple[int | None, int | None] | tuple[None, None] = (None, None)
 
-    def job_start(self, job: ChunkInfo, label: str) -> None:
+    async def clear(self) -> None:
+        async with self._lock:
+            self.history.clear()
+            self.active.clear()
+            self.connected = False
+            self.downtime = 0.0
+            self._session_start = time.monotonic()
+            self._page = 0
+            self._total_done = 0
+            self._total_fails = 0
+            self._total_stops = 0
+            self._total_bytes = 0
+
+    async def remove_jobs(self, worker_id: str) -> None:
+        async with self._lock:
+            self.active = {
+                file_id: (job, state) for file_id, (job, state) in self.active.items() if state.worker_id != worker_id
+            }
+
+    async def job_start(self, job: ChunkInfo, label: str, worker_id: str) -> None:
         now = time.monotonic()
         state = JobState(
+            worker_id=worker_id,
             label=label,
             status="OK",
             size=(job.end - job.start) or 0,
@@ -65,10 +88,10 @@ class WorkerDisplay:
             download_speed=0.0,
             upload_speed=0.0,
         )
-        with self._lock:
+        async with self._lock:
             self.active[job.file_id] = (job, state)
 
-    def job_update(
+    async def job_update(
         self,
         file_id: str,
         status: str,
@@ -79,7 +102,7 @@ class WorkerDisplay:
     ) -> None:
         try:
             now = time.monotonic()
-            with self._lock:
+            async with self._lock:
                 if file_id not in self.active:
                     return
                 job, state = self.active[file_id]
@@ -106,10 +129,10 @@ class WorkerDisplay:
                 if waiting is not None:
                     state.waiting = waiting
         except Exception:
-            console.print_exception()
+            self.log.exception("Error updating job state for file_id %s", file_id, exc_info=True)
 
-    def job_done(self, file_id: str, label: str, ok: bool, note: str = "") -> None:
-        with self._lock:
+    async def job_done(self, file_id: str, label: str, ok: bool, note: str = "") -> None:
+        async with self._lock:
             _, state = self.active.pop(file_id, (None, None))
             if state:
                 state.waiting = False
@@ -118,7 +141,10 @@ class WorkerDisplay:
                 if state and state.size:
                     self._total_bytes += state.size
             else:
-                self._total_fails += 1
+                if note == "Stopping...":
+                    self._total_stops += 1
+                else:
+                    self._total_fails += 1
             icon = "[green]✓[/green]" if ok else "[red]✗[/red]"
             color = "green" if ok else "red"
             entry = f"{icon} [{color}]{label}[/{color}]"
@@ -143,16 +169,16 @@ class WorkerDisplay:
         return f"{h:02d}:{m:02d}:{s:02d}"
 
     def get_stats(self) -> Table:
-        with self._lock:
-            snapshot = list(self.active.values())
-            done_count = self._total_done
-            fail_count = self._total_fails
-            total_bytes = self._total_bytes
-            dl, ul = zip((0, 0), *[self.effective_speeds(state) for _, state in snapshot])
-            download_speed = sum(dl)
-            upload_speed = sum(ul)
-            rank, uploaded = self._leaderboard_cache
-            username = self._username
+        snapshot = list(self.active.values())
+        done_count = self._total_done
+        fail_count = self._total_fails
+        stop_count = self._total_stops
+        total_bytes = self._total_bytes
+        dl, ul = zip((0, 0), *[self.effective_speeds(state) for _, state in snapshot])
+        download_speed = sum(dl)
+        upload_speed = sum(ul)
+        rank, uploaded = self._leaderboard_cache
+        username = self._username
 
         def get_size(speed: int | float | None) -> str:
             return humanize.naturalsize(speed or 0, binary=True, gnu=False, format="%.2f").replace(" Bytes", "b")
@@ -160,6 +186,7 @@ class WorkerDisplay:
         leaderboard_stats = f"[cyan]{username} #{rank or '--'}[/cyan] [dim]({get_size(float(uploaded or 0))})[/dim]"
         upload_stats = f"Uploads: [dim]{done_count} ({get_size(total_bytes)})[/dim]"
         fail_stats = f"Failures: [dim]{fail_count}[/dim]"
+        stop_stats = f"Stopped: [dim]{stop_count}[/dim]"
         uptime = f"Uptime: [dim]{self.get_timestamp(self._session_start)}[/dim]"
 
         connection_stats = ""
@@ -182,30 +209,30 @@ class WorkerDisplay:
         stats.add_column(justify="right")
         stats.add_column(justify="right", width=16)
         stats.add_row(
-            f"{leaderboard_stats} {upload_stats} {fail_stats}",
-            f"{connection_stats} ",
+            f"{leaderboard_stats} {upload_stats} {fail_stats} {stop_stats}",
+            connection_stats,
             uptime,
         )
 
         return stats
 
-    def update_rank(self, server: str) -> None:
+    async def update_rank(self, server: str) -> None:
         now = time.monotonic()
         personal_stats: tuple[int | None, int | None] | tuple[None, None] | None = None
 
-        with self._lock:
+        async with self._lock:
             previous_leaderboard = self._leaderboard_cache
             if not self._username or not self._discord_id:
                 token = load_token()
                 r = httpx.get(
                     url="https://discord.com/api/users/@me",
-                    headers={
-                        "Authorization": f"Bearer {token}"
-                    },
+                    headers={"Authorization": f"Bearer {token}"},
                     timeout=30,
                 )
                 if not r.is_success:
-                    console.print(f"[yellow]Unable to fetch Discord Username ({r.status_code})[/yellow]")
+                    self.log.warning(
+                        f"[yellow]Unable to fetch Discord Username ({r.status_code})[/yellow]", exc_info=True
+                    )
                     return
                 data = r.json()
                 self._username = data["global_name"]
@@ -218,9 +245,7 @@ class WorkerDisplay:
                 try:
                     res = httpx.get(
                         url=f"{server}{LEADERBOARD_ENDPOINT}",
-                        headers={
-                            "User-Agent": USER_AGENT
-                        },
+                        headers={"User-Agent": USER_AGENT},
                         timeout=30,
                     )
                     leaderboard = sorted(res.json(), key=lambda x: x["downloaded_bytes"], reverse=True)
@@ -235,19 +260,20 @@ class WorkerDisplay:
                         (None, None),
                     )
                 except (JSONDecodeError, httpx.ConnectError, httpx.ReadTimeout) as e:
-                    console.print(f"[yellow]Currently unable to refresh leaderboard rank: {e}.")
+                    self.log.warning(
+                        f"[yellow]Currently unable to refresh leaderboard rank: {e}.[/yellow]", exc_info=True
+                    )
                 self._leaderboard_last_fetch = now
 
         if personal_stats is not None:
-            with self._lock:
+            async with self._lock:
                 self._leaderboard_cache = personal_stats
 
     def __rich__(self) -> Group:
         now = time.monotonic()
 
-        with self._lock:
-            snapshot = list(self.active.values())
-            history_lines = list(self.history)
+        snapshot = list(self.active.values())
+        history_lines = list(self.history)
 
         height = console.size.height
 
@@ -336,7 +362,7 @@ class WorkerDisplay:
                     elapsed_str,
                 )
             except Exception:
-                console.print_exception()
+                self.log.exception("Error rendering job state for file_id %s", job.file_id, exc_info=True)
 
         parts: list = []
 
@@ -346,8 +372,10 @@ class WorkerDisplay:
         parts.append(table)
 
         if pages > 1:
+            left_arrow = "← " if self._page > 0 else ""
+            right_arrow = " →" if self._page < pages - 1 else ""
             parts.append(
-                Text.from_markup(f"[dim]Page {self._page + 1}/{pages} [← prev | → next][/dim]", justify="center")
+                Text.from_markup(f"[dim]{left_arrow}Page {self._page + 1}/{pages}{right_arrow}[/dim]", justify="center")
             )
 
         return Group(*parts)

@@ -3,8 +3,10 @@ Minerva DPN Worker — single-file volunteer download client.
 """
 
 import asyncio
+import logging
 
 import click
+from rich.logging import RichHandler
 
 from minerva import __version__
 from minerva.auth import do_login, load_token
@@ -61,12 +63,29 @@ def run(
     max_job_size: str,
 ) -> None:
     """Start downloading and uploading files."""
+    # configure logs
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        handlers=[
+            RichHandler(
+                console=console,
+                show_path=False,
+                markup=True,
+                omit_repeated_times=True,
+            )
+        ],
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    log = logging.getLogger(__file__)
+
     # ensure user is logged-in first
     token = load_token()
     if not token:
         token = ctx.invoke(login, server=server)
     if not token:
-        console.print("[red]Could not login, please try again...")
+        log.error("[red]Could not login, please try again...")
         return
 
     # start main loop

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sys
 import time
@@ -31,10 +32,9 @@ from minerva.ws_message import (
     OkResponseMessage,
     RegisterMessage,
     RegisterResponseMessage,
+    WSMessage,
     decode_message,
 )
-
-_STOP = object()
 
 
 async def input_loop(display: WorkerDisplay) -> None:
@@ -43,7 +43,7 @@ async def input_loop(display: WorkerDisplay) -> None:
     while True:
         key = await asyncio.to_thread(readchar.readkey)
 
-        with display._lock:
+        async with display._lock:
             if key == readchar.key.RIGHT:
                 display._page += 1
             elif key == readchar.key.LEFT:
@@ -51,12 +51,12 @@ async def input_loop(display: WorkerDisplay) -> None:
 
 
 async def update_rank_loop(display: WorkerDisplay, server: str) -> None:
+    log = logging.getLogger(__file__)
     while True:
         try:
-            display.update_rank(server)
+            await display.update_rank(server)
         except Exception:
-            # Just in case one error misses a catch → asyncio voids it otherwise
-            console.print_exception()
+            log.exception("Error updating rank", exc_info=True)
         await asyncio.sleep(10)
 
 
@@ -68,74 +68,332 @@ async def worker_loop(
     min_job_size: str,
     max_job_size: str,
 ) -> None:
+    log = logging.getLogger(__file__)
+
     # prevent "too many open files" errors with high concurrency
     if os.name == "posix":
         os.system("ulimit -n 16384")
 
     # compute optimal concurrency based on download speed tests
     if not concurrency:
-        console.print("Testing raw download speed...")
+        log.info("Testing raw download speed...")
         download_speed = await test_download_speed(SPEED_TEST_URL)
-        console.print(f"[dim] └ Result: {naturalsize(download_speed)}/s[/dim]")
-        console.print("Testing download speed from Myrient...")
+        log.info(f"Result: {naturalsize(download_speed)}/s[/dim]")
+        log.info("Testing download speed from Myrient...")
         myrient_download_speed = await test_download_speed(MYRIENT_SPEED_TEST_URL)
-        console.print(f"[dim] └ Result: {naturalsize(myrient_download_speed)}/s[/dim]")
+        log.info(f"Result: {naturalsize(myrient_download_speed)}/s[/dim]")
         concurrency = int(download_speed // myrient_download_speed)
     concurrency = max(1, min(concurrency, MAX_CHUNK_COUNT))
 
     # display configuration
-    console.print(f"Server URL:     [dim]{server}[/dim]")
-    console.print(f"Concurrency:    [dim]{concurrency}[/dim]")
-    console.print(f"Retries:        [dim]{retries}[/dim]")
-    console.print(f"Min job size:   [dim]{naturalsize(parse_size(min_job_size)) if min_job_size else 'N/A'}[/dim]")
-    console.print(f"Max job size:   [dim]{naturalsize(parse_size(max_job_size)) if max_job_size else 'N/A'}[/dim]")
-    console.print()
+    log.info(f"Server URL:     [dim]{server}[/dim]")
+    log.info(f"Concurrency:    [dim]{concurrency}[/dim]")
+    log.info(f"Retries:        [dim]{retries}[/dim]")
+    log.info(f"Min job size:   [dim]{naturalsize(parse_size(min_job_size)) if min_job_size else 'N/A'}[/dim]")
+    log.info(f"Max job size:   [dim]{naturalsize(parse_size(max_job_size)) if max_job_size else 'N/A'}[/dim]")
+    log.info("")
 
-    queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency)
-    stop_event = asyncio.Event()
-    seen_ids: set[str] = set()
-    seen_lock = asyncio.Lock()
+    # ui and configuration
     display = WorkerDisplay()
-    websocket_lock = asyncio.Lock()
-
     min_job_size_bytes = parse_size(min_job_size) if min_job_size else None
     max_job_size_bytes = parse_size(max_job_size) if max_job_size else None
 
+    # where jobs are stored before being processed
+    job_queue: dict[str, asyncio.Queue] = {}
+    active_job_ids: set[str] = set()  # used to prevent multiple workers from processing the same job
+    active_job_ids_lock: asyncio.Lock = asyncio.Lock()  # protects the active_job_ids set
+
+    # awaitables for websocket responses, keyed by either worker_id or chunk_id depending on the message type
+    websocket_futures: dict[str, asyncio.Future] = {}
+    websocket_futures_lock: asyncio.Lock = asyncio.Lock()
+    websocket_lock: asyncio.Lock = asyncio.Lock()  # TODO: Do we need both locks separate? can we reuse?
+
+    # used to signal the producer to stop fetching new jobs or the workers to stop processing jobs
+    ctrl_c_event: asyncio.Event = asyncio.Event()  # used when we want a graceful shutdown
+    reconnect_event: dict[str, asyncio.Event] = {}  # used when we need to reconnect to the server
+
+    # server connection and server assigned worker id
     connection: ClientConnection | None = None
-    had_connection = False
     worker_id: str | None = None
+
+    async def queue_jobs(jobs: list[ChunkInfo], worker_id: str) -> int:
+        """
+        Add a job to the queue.
+
+        Skips active jobs that are already being processed or queued.
+        Also skips jobs that do not meet the size requirements.
+
+        Returns the number of jobs added to the queue.
+        """
+        jobs_queued = 0
+        for job in jobs:
+            async with active_job_ids_lock:
+                if job.file_id in active_job_ids:
+                    continue
+                active_job_ids.add(job.file_id)
+
+            size = job.end - job.start
+            if size:
+                filename = Path(urlparse(unquote(job.url)).path).name
+                if min_job_size_bytes and (size < min_job_size_bytes):
+                    log.warning(
+                        f"[yellow]Skipping job {filename} "
+                        f"({naturalsize(size)} < "
+                        f"{naturalsize(min_job_size_bytes)})[/yellow]"
+                    )
+                    continue
+                if max_job_size_bytes and (size > max_job_size_bytes):
+                    log.warning(
+                        f"[yellow]Skipping job {filename} "
+                        f"({naturalsize(size)} > "
+                        f"{naturalsize(max_job_size_bytes)})[/yellow]"
+                    )
+                    continue
+
+            await job_queue[worker_id].put(job)
+            jobs_queued += 1
+
+        return jobs_queued
+
+    async def producer(websocket: ClientConnection, worker_id: str) -> int:
+        """
+        Gets jobs from the server where needed and adds them to the queue.
+        Skips fetching new jobs if the stop event is set.
+
+        To prevent overhwleming the worker processor and server, new jobs are delayed if:
+        - the queue is more than half full
+        - there were no free slots in the queue
+        - the server doesn't have any jobs available
+        - an error occurs while requesting jobs from the server
+        - all jobs received from the server were skipped by filters
+
+        Returns the amount of total jobs produced in it's lifetime.
+        Only returns if the producer loop exits gracefully, otherwise it runs indefinitely until cancelled.
+        """
+        jobs_produced = 0
+
+        try:
+            while not ctrl_c_event.is_set() and not reconnect_event[worker_id].is_set():
+                # if queue is more than half full, backoff for 1s
+                if job_queue[worker_id].qsize() >= max(1, job_queue[worker_id].maxsize // 2):
+                    await asyncio.sleep(1)
+                    continue
+
+                free_slots = max(0, concurrency - job_queue[worker_id].qsize())
+                fetch_count = max(0, min(concurrency, free_slots))
+                if fetch_count <= 0:
+                    log.info("Job queue is full, waiting 2s...")
+                    await asyncio.sleep(2)
+                    continue
+
+                try:
+                    log.info("Requesting %d jobs from the server...", fetch_count)
+                    future = asyncio.get_running_loop().create_future()
+                    async with websocket_futures_lock:
+                        websocket_futures[worker_id] = future
+                    async with websocket_lock:
+                        if reconnect_event[worker_id].is_set():
+                            break
+                        await websocket.send(GetChunksMessage(count=fetch_count).encode())
+                    ws_response: WSMessage = await asyncio.wait_for(future, timeout=30)
+
+                    if isinstance(ws_response, ErrorResponseMessage):
+                        raise Exception(ws_response.values["error"])
+                    if not isinstance(ws_response, ChunkResponseMessage):
+                        raise Exception(f"Unexpected response type: {type(ws_response)}")
+                    if ws_response.chunks:
+                        jobs_queued = await queue_jobs(ws_response.chunks, worker_id)
+                        log.info(
+                            "Queued %d jobs, there are now %d jobs in the queue",
+                            jobs_queued,
+                            job_queue[worker_id].qsize(),
+                        )
+                        jobs_produced += jobs_queued
+                        if jobs_queued == 0:
+                            log.warning("Received %d jobs, but all were skipped by filters", len(ws_response.chunks))
+                            await asyncio.sleep(5)
+                            continue
+                    else:
+                        if job_queue[worker_id].qsize() == 0:
+                            log.warning("Server currently has no jobs available...")
+                        await asyncio.sleep(RETRY_DELAY)
+                        continue
+                except Exception as e:
+                    log.error("Failed requesting more jobs %s (%s)", worker_id, e)
+                    await asyncio.sleep(RETRY_DELAY)
+                    continue
+        except websockets.exceptions.WebSocketException:
+            log.error("Producer loop %s had a WebSocket error, exiting...", worker_id)
+        except asyncio.CancelledError:
+            pass  # log.info("Producer loop %s received cancellation, exiting...", worker_id)
+
+        return jobs_produced
+
+    async def worker(websocket: ClientConnection, worker_id: str) -> tuple[int, int]:
+        """
+        Worker thread, takes jobs from the queue and processes them.
+
+        If an error occurs while processing a job, the job is marked as failed
+        and the loop continues with the next job. The failed job's ID will be
+        removed from the active job set, allowing it to be re-queued in the future.
+
+        To prevent overhwleming the worker processor and server, processing jobs are delayed if:
+        - an error occurs while processing jobs from the queue
+
+        Returns the amount of successful and failed jobs processed in it's lifetime.
+        """
+        jobs_success = 0
+        jobs_fail = 0
+
+        try:
+            while not ctrl_c_event.is_set() and not reconnect_event[worker_id].is_set():
+                job: ChunkInfo = await job_queue[worker_id].get()
+                try:
+                    await process_job(
+                        job=job,
+                        server=websocket,
+                        worker_id=worker_id,
+                        retries=retries,
+                        display=display,
+                        lock=websocket_lock,
+                        reconnect_event=reconnect_event[worker_id],
+                        ctrl_c_event=ctrl_c_event,
+                        websocket_futures=websocket_futures,
+                        websocket_futures_lock=websocket_futures_lock,
+                    )
+                    jobs_success += 1
+                except Exception as e:
+                    jobs_fail += 1
+                    log.error("[worker] Error processing job %s: %s", job.file_id, e)
+                    await asyncio.sleep(RETRY_DELAY)
+                    continue
+                finally:
+                    async with active_job_ids_lock:
+                        active_job_ids.discard(job.file_id)
+                    job_queue[worker_id].task_done()
+        except websockets.exceptions.WebSocketException:
+            log.error("[worker] Worker loop %s had a WebSocket error, exiting...", worker_id)
+        except asyncio.CancelledError:
+            pass  # log.info("[worker] Worker loop %s received cancellation, exiting...", worker_id)
+
+        return jobs_success, jobs_fail
+
+    async def clear_job_queue(worker_id: str) -> None:
+        return
+        try:
+            while True:
+                job_queue[worker_id].get_nowait()
+                job_queue[worker_id].task_done()
+        except asyncio.QueueEmpty:
+            pass
+
+    async def stop_jobs(worker_id: str | None = None) -> None:
+        # signal currently running jobs to abort
+        if worker_id:
+            reconnect_event[worker_id].set()
+            await display.remove_jobs(worker_id)
+            await clear_job_queue(worker_id)
+        # flush websocket futures so they don't try to write to a dead websocket
+        async with websocket_futures_lock:
+            try:
+                while True:
+                    future = websocket_futures.popitem()[1]
+                    if future and not future.done():
+                        future.cancel()
+                    else:
+                        break
+            except KeyError:
+                pass
+        # reset what jobs are active since they should all be stopped now
+        async with active_job_ids_lock:
+            active_job_ids.clear()
+
+    async def websocket_receiver(
+        websocket: ClientConnection,
+        worker_id: str,
+        websocket_futures: dict[str, asyncio.Future],
+        websocket_futures_lock: asyncio.Lock,
+    ) -> None:
+        """
+        Receives messages from the websocket and processes them accordingly.
+
+        This function runs in an infinite loop, decoding messages received from the
+        websocket and handling them based on their type. It updates the appropriate
+        queues and futures, and handles websocket closure and errors.
+
+        Args:
+            websocket (ClientConnection): The websocket connection to receive messages from.
+            websocket_futures (dict[str, asyncio.Future]): Dictionary mapping chunk IDs to futures.
+            websocket_futures_lock (asyncio.Lock): Lock to synchronize access to websocket_futures.
+
+        Returns:
+            None
+        """
+        try:
+            while not ctrl_c_event.is_set() and not reconnect_event[worker_id].is_set():
+                raw = await asyncio.wait_for(websocket.recv(), timeout=CONNECTIVITY_CHECK_TIMEOUT * 10)
+                msg = decode_message(raw)
+
+                future_key: str
+                if isinstance(msg, ChunkResponseMessage):
+                    future_key = worker_id
+                elif isinstance(msg, (ErrorResponseMessage, OkResponseMessage)):
+                    if not msg.values.get("chunk_id"):
+                        log.warning(f"Received a ({type(msg)}) message without correlation ID: {msg}")
+                        continue
+                    future_key = msg.values["chunk_id"]
+                else:
+                    log.warning(f"Received unrecognized message type: {msg.get_type()}")
+                    continue
+
+                async with websocket_futures_lock:
+                    future = websocket_futures.pop(future_key, None)
+
+                if future and not future.done():
+                    future.set_result(msg)
+        except websockets.ConnectionClosed as e:
+            log.error("Websocket connection closed during use in receiver: %s", str(e))
+            await stop_jobs(worker_id)
+            log.warning("All files should DEFINITELY be stopped now")
+        except Exception:
+            log.exception("An unexpected error occurred")
+            raise
+
+    # start the update rank task
+    update_rank_task = asyncio.create_task(update_rank_loop(display, server))
+
+    # start the input loop if stdin is a TTY
+    input_loop_task = None
+    if sys.stdin.isatty():
+        input_loop_task = asyncio.create_task(input_loop(display))
 
     with Live(display, console=console, refresh_per_second=4, screen=False):
         while True:
-            console.print("Trying to connect to the coordinator server...")
-            if display.connected or not display.downtime:
-                display.downtime = time.monotonic()
+            # 1. Server died, start fresh with no jobs, running jobs should stop as failures
+            await stop_jobs()
             display.connected = False
+            if display.downtime == 0:
+                display.downtime = time.monotonic()
+
+            # 2. Try to connect to the WebSocket server, if it fails, wait 10s and try again
+            log.info("Trying to connect to the coordinator server...")
             try:
                 connection = await websockets.connect(
                     f"wss://{server.replace('https://', '')}{WORKER_ENDPOINT}",
-                    open_timeout=CONNECTIVITY_CHECK_TIMEOUT,
-                    ping_interval=CONNECTIVITY_CHECK_TIMEOUT * 2,
-                    ping_timeout=CONNECTIVITY_CHECK_TIMEOUT * 2,
+                    open_timeout=CONNECTIVITY_CHECK_TIMEOUT * 3,
+                    ping_interval=CONNECTIVITY_CHECK_TIMEOUT * 5,
+                    ping_timeout=CONNECTIVITY_CHECK_TIMEOUT * 5,
                 )
-                had_connection = True
+                if not connection:
+                    raise ValueError("connection object empty")
             except Exception as e:
-                if had_connection:
-                    console.print(f"[red]Lost connection to server, trying again... ({e})[/red]")
-                else:
-                    console.print(f"[red]Failed to connect to the server, trying again... ({e})[/red]")
+                log.error("Failed to connect to the server, trying again in %d seconds... (%s)", RETRY_DELAY, e)
                 await asyncio.sleep(RETRY_DELAY)
                 continue
-
-            if not connection:
-                raise ValueError("Connection failed or rejected")
+            log.info("Successfully connected to the Server")
 
             async with connection as websocket:
-                chunk_response_queue: asyncio.Queue = asyncio.Queue()
-                job_response_futures: dict[str, asyncio.Future] = {}
-                job_response_lock = asyncio.Lock()
-
-                # 1. Register with the Hyperscrape Coordinator
+                # 3. Register with the Server Coordinator service
                 try:
                     async with websocket_lock:
                         await websocket.send(
@@ -149,240 +407,63 @@ async def worker_loop(
                     if not isinstance(response, RegisterResponseMessage):
                         raise Exception(f"Unexpected response type: {type(response)}")
                     worker_id = response.worker_id
+                    if not worker_id:
+                        raise ValueError("worker_id empty")
                 except Exception as e:
-                    console.print(
-                        f"[red]Error: Unable to register with coordinator ({e}), retrying in {RETRY_DELAY}s...[/red]"
-                    )
+                    log.error("Error: Failed to register on server, trying again in %d seconds... (%s)", RETRY_DELAY, e)
                     await asyncio.sleep(RETRY_DELAY)
                     continue
-                if not worker_id:
-                    console.print("[red]COULD NOT CONNECT TO COORDINATOR![/red]")
-                    console.print("[red]Will try again in one minute...[/red]")
-                    await asyncio.sleep(60)
-                    continue
-                console.print(f"[green]Connected to coordinator with ID: {worker_id}[/green]")
+                log.info("Registered with the Server Coordinator Service")
+
+                # initialize the reconnect event for this worker, mark as connected
+                job_queue[worker_id] = asyncio.Queue(maxsize=concurrency)
+                reconnect_event[worker_id] = asyncio.Event()
                 display.connected = True
-                stop_event.clear()
+                display.downtime = 0.0
 
-                async def queue_jobs(jobs: list[ChunkInfo]) -> int:
-                    jobs_queued = 0
-                    for job in jobs:
-                        async with seen_lock:
-                            if job.file_id in seen_ids:
-                                continue
-                            seen_ids.add(job.file_id)
-
-                        size = job.end - job.start
-                        if size:
-                            filename = Path(urlparse(unquote(job.url)).path).name
-                            if min_job_size_bytes and (size < min_job_size_bytes):
-                                console.print(
-                                    f"[yellow]Skipping job {filename} "
-                                    f"({naturalsize(size)} < "
-                                    f"{naturalsize(min_job_size_bytes)})[/yellow]"
-                                )
-                                continue
-                            if max_job_size_bytes and (size > max_job_size_bytes):
-                                console.print(
-                                    f"[yellow]Skipping job {filename} "
-                                    f"({naturalsize(size)} > "
-                                    f"{naturalsize(max_job_size_bytes)})[/yellow]"
-                                )
-                                continue
-
-                        await queue.put(job)
-                        jobs_queued += 1
-
-                    return jobs_queued
-
-                async def producer() -> None:
-                    """Producer task to keep the queue filled with jobs from the server."""
-                    while not stop_event.is_set():
-                        # if queue is more than half full, backoff for 1s
-                        if queue.qsize() >= max(1, queue.maxsize // 2):
-                            await asyncio.sleep(1)
-                            continue
-
-                        free_slots = max(0, queue.maxsize - queue.qsize())
-                        fetch_count = max(0, min(concurrency, free_slots))
-
-                        if fetch_count <= 0:
-                            await asyncio.sleep(2)
-                            continue
-
-                        try:
-                            async with websocket_lock:
-                                await websocket.send(GetChunksMessage(count=fetch_count).encode())
-                            response: ChunkResponseMessage = await asyncio.wait_for(
-                                chunk_response_queue.get(), timeout=10
-                            )
-                            if isinstance(response, ErrorResponseMessage):
-                                raise Exception(response.values["error"])
-                            if not isinstance(response, ChunkResponseMessage):
-                                raise Exception(f"Unexpected response type: {type(response)}")
-                            if response.chunks:
-                                jobs_added = await queue_jobs(response.chunks)
-                                if jobs_added == 0:
-                                    console.print(
-                                        f"[yellow]Received {len(response.chunks)} jobs, but all were skipped by filters[/yellow]"
-                                    )
-                                    await asyncio.sleep(5)
-                                    continue
-                            else:
-                                if queue.qsize() == 0:
-                                    console.print("[yellow]Server currently has no jobs available...[/yellow]")
-                                await asyncio.sleep(RETRY_DELAY)
-                                continue
-                        except Exception as e:
-                            console.print(f"[red]Failed requesting more jobs ({e})[/red]")
-                            await asyncio.sleep(RETRY_DELAY)
-                            continue
-
-                async def worker() -> None:
-                    """Worker task to process jobs from the queue."""
-                    while True:
-                        try:
-                            job = await queue.get()
-                        except asyncio.CancelledError:
-                            return
-                        if job is _STOP:
-                            queue.task_done()
-                            return
-                        try:
-                            await process_job(
-                                job=job,
-                                server=websocket,
-                                retries=retries,
-                                display=display,
-                                lock=websocket_lock,
-                                stop=stop_event,
-                                job_response_futures=job_response_futures,
-                                job_response_lock=job_response_lock,
-                            )
-                        except Exception as e:
-                            console.print(f"[red]Error processing job {job.file_id}: {e}[/red]")
-                            await asyncio.sleep(RETRY_DELAY)
-                            continue
-                        finally:
-                            async with seen_lock:
-                                seen_ids.discard(job.file_id)
-                            queue.task_done()
-
-                async def stop_workers() -> None:
-                    for _ in range(concurrency):
-                        await queue.put(_STOP)
-
-                async def websocket_receiver(
-                    websocket: ClientConnection,
-                    chunk_response_queue: asyncio.Queue,
-                    job_response_futures: dict[str, asyncio.Future],
-                    job_response_lock: asyncio.Lock,
-                ) -> None:
-                    try:
-                        while True:
-                            raw = await websocket.recv()
-                            msg = decode_message(raw)
-
-                            msg_type = msg.get_type()
-                            if isinstance(msg, ChunkResponseMessage):
-                                await chunk_response_queue.put(msg)
-                            elif isinstance(msg, ErrorResponseMessage):
-                                console.print(f"[red]Error from server: {msg}[/red]")
-                                chunk_id = msg.values["chunk_id"]
-                                async with job_response_lock:
-                                    future = job_response_futures.pop(chunk_id, None)
-                                if future and not future.done():
-                                    future.set_result(msg)
-                                else:
-                                    console.print(f"[yellow]Unhandled message type: {msg_type}[/yellow]")
-                            elif isinstance(msg, OkResponseMessage):
-                                chunk_id = msg.values["chunk_id"]
-                                async with job_response_lock:
-                                    future = job_response_futures.pop(chunk_id, None)
-                                if future and not future.done():
-                                    future.set_result(msg)
-                                else:
-                                    console.print(f"[yellow]Unhandled message type: {msg_type}[/yellow]")
-                            else:
-                                console.print(f"[yellow]Unhandled message type: {msg_type}[/yellow]")
-                    except websockets.ConnectionClosed as e:
-                        f"[yellow]Websocket closed: code={e.code}, reason={e.reason}[/yellow]"
-                        # signal currently running jobs to abort
-                        stop_event.set()
-                        # flush queued jobs so they don't run with a dead websocket
-                        try:
-                            while True:
-                                queue.get_nowait()
-                                queue.task_done()
-                        except asyncio.QueueEmpty:
-                            pass
-                        # flush job response futures so they don't try to write to a dead websocket
-                        try:
-                            while True:
-                                future = job_response_futures.popitem()[1]
-                                if future:
-                                    future.cancel()
-                                else:
-                                    break
-                        except KeyError:
-                            pass
-                        # release job response lock in case it's waiting for a response that will never come
-                        job_response_lock.release()
-                        console.print("[yellow]All files should DEFINITELY be stopped now[/yellow]")
-                        # allow jobs to be re-fetched after reconnect
-                        async with seen_lock:
-                            seen_ids.clear()
-                        # wake all workers so they exit
-                        for _ in range(concurrency):
-                            try:
-                                queue.put_nowait(_STOP)
-                            except asyncio.QueueFull:
-                                break
-                    except Exception:
-                        console.print_exception()
-                        raise
-
-                workers = [asyncio.create_task(worker()) for _ in range(concurrency)]
+                # 4. Setup the producer, workers, websocket receiver, and rank updater
+                producer_task = asyncio.create_task(producer(websocket, worker_id))
                 receiver_task = asyncio.create_task(
-                    websocket_receiver(websocket, chunk_response_queue, job_response_futures, job_response_lock)
+                    websocket_receiver(
+                        websocket=websocket,
+                        worker_id=worker_id,
+                        websocket_futures=websocket_futures,
+                        websocket_futures_lock=websocket_futures_lock,
+                    )
                 )
-                producer_task = asyncio.create_task(producer())
-                update_rank_task = asyncio.create_task(update_rank_loop(display, server))
-                input_loop_task = None
+                workers = [asyncio.create_task(worker(websocket, worker_id)) for _ in range(concurrency)]
+                tasks = [*workers, producer_task, receiver_task]
 
-                if sys.stdin.isatty():
-                    input_loop_task = asyncio.create_task(input_loop(display))
-
-                tasks = [receiver_task, producer_task, update_rank_task, *workers]
-                if input_loop_task:
-                    tasks.append(input_loop_task)
-
+                # 5. Wait for any of the workers, producer, or receiver to error out or finish
                 try:
-                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+                    # once any of the tasks have an exception, cancel all of them
+                    _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                     for task in pending:
                         task.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    print("Worker loop exited, shutting down...")
+                    await asyncio.gather(*pending, return_exceptions=False)
+                    log.warning("All workers and tasks exited, restarting...")
+                    await stop_jobs(worker_id)
                 except KeyboardInterrupt:
-                    console.print("\n[yellow]Shutting down…[/yellow]")
-
-                    stop_event.set()
-
-                    # stop producer from adding more jobs
-                    producer_task.cancel()
-
+                    log.info("Received Ctrl+C, shutting down...")
+                    # signal all loops to stop, we want to fully shut down the worker, not reconnect
+                    ctrl_c_event.set()
+                    log.info("Shutting down…")
+                    # cancell all workers, producer, and receiver tasks
+                    for task in tasks:
+                        task.cancel()
+                    # stop the rank update loop
+                    update_rank_task.cancel()
+                    # stop the input loop if it was started
                     if input_loop_task:
                         input_loop_task.cancel()
-
-                    update_rank_task.cancel()
-
-                    # wait for all queued jobs to finish
-                    await queue.join()
-
-                    # tell workers to exit
-                    await stop_workers()
-
-                    # wait for workers to terminate
-                    await asyncio.gather(*workers, return_exceptions=True)
-
+                    # wait for all jobs in queue to finish
+                    await job_queue[worker_id].join()
+                    # wait for all workers, the producer, and the receiver to exit
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    # don't start up again
                     return
+                except Exception as e:
+                    log.exception(f"Error in a task: {e}", exc_info=True)
+                    await stop_jobs(worker_id)
+                    await asyncio.sleep(RETRY_DELAY)
+                    continue

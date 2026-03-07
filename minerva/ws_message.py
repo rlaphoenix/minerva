@@ -198,6 +198,7 @@ class ChunkInfo:
 
 @dataclass
 class JobState:
+    worker_id: str
     label: str
     status: str
     size: int
