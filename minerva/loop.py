@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -107,6 +108,9 @@ async def worker_loop(
     with Live(display, console=console, refresh_per_second=4, screen=False):
         while True:
             console.print("Trying to connect to the coordinator server...")
+            display.connected = False
+            if had_connection:
+                display.downtime = time.monotonic()
             try:
                 connection = await websockets.connect(
                     f"wss://{server.replace('https://', '')}{WORKER_ENDPOINT}",
@@ -157,6 +161,7 @@ async def worker_loop(
                     await asyncio.sleep(60)
                     continue
                 console.print(f"[green]Connected to coordinator with ID: {worker_id}[/green]")
+                display.connected = True
                 stop_event.clear()
 
                 async def queue_jobs(jobs: list[ChunkInfo]) -> int:

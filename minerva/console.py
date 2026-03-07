@@ -36,6 +36,8 @@ class WorkerDisplay:
         # All following variables are locked by _lock
         self.history: collections.deque = collections.deque(maxlen=HISTORY_LINES)
         self.active: dict[str, tuple[ChunkInfo, JobState]] = {}
+        self.connected: bool = False
+        self.downtime: float = 0.0
         self._lock = threading.Lock()
         self._session_start = time.monotonic()
         self._page = 0
@@ -128,12 +130,19 @@ class WorkerDisplay:
         decay = max(0.0, 1 - age / 3)
         return (max(0.0, state.download_speed * decay), max(0.0, state.upload_speed * decay))
 
-    def get_stats(self) -> Table:
-        now = time.monotonic()
+    @staticmethod
+    def get_timestamp(since: float, in_seconds: bool = False) -> str:
+        elapsed = time.monotonic() - since
+        if in_seconds:
+            return str(int(elapsed))
+        h = int(elapsed // 3600)
+        m = int((elapsed % 3600) // 60)
+        s = int(elapsed % 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
 
+    def get_stats(self) -> Table:
         with self._lock:
             snapshot = list(self.active.values())
-            elapsed_total = now - self._session_start
             done_count = self._total_done
             fail_count = self._total_fails
             total_bytes = self._total_bytes
@@ -143,22 +152,30 @@ class WorkerDisplay:
             rank, uploaded = self._leaderboard_cache
             username = self._username
 
-        h = int(elapsed_total // 3600)
-        m = int((elapsed_total % 3600) // 60)
-        s = int(elapsed_total % 60)
-
         def get_size(speed: int | float | None) -> str:
             return humanize.naturalsize(speed or 0, binary=True, gnu=False, format="%.2f").replace(" Bytes", "b")
+
+        leaderboard_stats = f"[cyan]{username} #{rank or '--'}[/cyan] [dim]({get_size(float(uploaded or 0))})[/dim]"
+        upload_stats = f"Uploads: [dim]{done_count} ({get_size(total_bytes)})[/dim]"
+        fail_stats = f"Failures: [dim]{fail_count}[/dim]"
+
+        connection_stats = ""
+        if self.connected:
+            connection_stats = (
+                f"Speed: [blue]↓ {get_size(download_speed)}/s[/blue] [green]↑ {get_size(upload_speed)}/s[/green] "
+                + f"[dim]{self.get_timestamp(self._session_start)}[/dim]"
+            )
+        elif self.downtime < 1:
+            connection_stats = "[cyan]Connecting...[/cyan]"
+        else:
+            connection_stats = f"[red]Down for {self.get_timestamp(self.downtime, in_seconds=True)}s[/red]"
 
         stats = Table.grid(expand=True)
         stats.add_column(justify="left")
         stats.add_column(justify="right")
         stats.add_row(
-            f"[cyan]{username} #{rank or '--'}[/cyan] [dim]({get_size(float(uploaded or 0))})[/dim] "
-            + f"Uploads: [dim]{done_count} ({get_size(total_bytes)})[/dim] "
-            + f"Failures: [dim]{fail_count}[/dim]",
-            f"Speed: [blue]↓ {get_size(download_speed)}/s[/blue] [green]↑ {get_size(upload_speed)}/s[/green] "
-            + f"[dim]{h:02d}:{m:02d}:{s:02d}[/dim] ",
+            f"{leaderboard_stats} {upload_stats} {fail_stats}",
+            connection_stats,
         )
 
         return stats
