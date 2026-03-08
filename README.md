@@ -76,68 +76,61 @@ This does not give Minerva, this script, or anyone else access to your account, 
 
 ## Docker
 
-You can run the Minerva Worker inside a headless Docker container.
-The following steps assume some knowledge on git/docker.
+You can run the Minerva Worker inside a Docker container.
 
-To change the settings of the worker, you can set the following environment variables:
+1. Download `docker-compose.yml` from the repository:  
+   `curl -L https://raw.githubusercontent.com/minerva-archive/worker/main/docker-compose.yml -o docker-compose.yml`
+2. Before running the worker you must authenticate once:
+   `docker compose run --rm -it login`  
+   Once you authenticate, a token file is saved to `~/.minerva-dpn/token` on your host machine
+3. Start the worker to begin the archiving process: `docker compose up -d`  
+   This runs the worker in the background, to stop it run `docker compose down`  
+   If you want to see it running, instead run `docker compose up`
 
-- `--server`: `MINERVA_SERVER`
-- `-c/--concurrency`: `MINERVA_CONCURRENCY`
-- `-r/--retries`: `MINERVA_RETRIES`
-- `--min-job-size`: `MINERVA_MIN_JOB_SIZE`
-- `--max-job-size`: `MINERVA_MAX_JOB_SIZE`
+> [!NOTE]
+The container stores your login token in `~/.minerva-dpn/token` on the host.
+Do not delete this file, it will be re-used every time you run `docker compose up`.
 
-There are more advanced environment variables available, you can find them listed in
-[constants.py](/minerva/constants.py).
+### Building Locally
 
-### 1. Download a copy of the repository
+If you prefer to run the latest code and/or prefer to build and run the code locally,
+clone/download the repository and add `--build` to all uses of `docker compose` above.
 
-- Clone the Git Repository: `git clone https://github.com/minerva-archive/worker`  
-- Enter it: `cd minerva`
-
-### 2. Get an Authorization Token
-
-There's two ways to go about this,
-
-- enable tty/interactivity and run minerva normally, see [Terminal Interactity](#terminal-interactivity),
-- or, get and save the token to a specific location manually.
-
-To get the token manually, go to the following link to authorize with discord and the API:  
-<https://discord.com/oauth2/authorize?client_id=1478862142793977998&response_type=code&redirect_uri=https%3A%2F%2Ffirehose.minerva-archive.org%2Fcode&scope=identify>
-
-Copy the token value the page gives you and save it to `~/.minerva-dpn/token` on Linux/macOS,
-or save it to `%USERPROFILE%/.minerva-dpn/token` on Windows. Make sure the file is saved as
-UTF-8 encoding, without BOM.
-
-The token file must stay there at all times for the Docker container to have it. The location where the
-token needs to be can be changed, just make sure you change the volume location and environment variable
-in the docker-compose config.
-
-### 3. Start the container
-
-Build the Docker image and start the container with `docker compose up -d` to run it in the background.
-You can later stop the container with `docker compose down`.
-
-> [!TIP]
-If you prefer to run it in the foreground (attached to your terminal), simply use `docker compose up`.
-
-### Terminal Interactivity
-
-These options allow you to interact with the container directly through the terminal.
-
-The configuration is controlled via the `stdin_open` and `tty` options in the [`docker-compose.yml`](./docker-compose.yml)
-
-```yml
-stdin_open: true  # Keeps STDIN open even if not attached
-tty: true         # Allocates a pseudo-TTY for the container
+```bash
+git clone https://github.com/minerva-archive/worker  # download the repo
+cd worker  # enter the repo
+docker compose run --rm -it --build login  # login
+docker compose up -d --build  # build and run in the background
 ```
 
-If you do not need terminal interactivity, you can comment out or remove these lines. This is useful for running the container in the background without manual input.
+### Configuration
 
-When these are enabled, you may prefer to use `docker attach <container_name>` instead of `docker logs <container_name>` to see real-time output without duplicated lines, and to provide input.
+Worker settings can be changed via environment variables:
 
-> [!TIP]
-To safely detach from an attached container without stopping it, use the key sequence `CTRL + P` then `CTRL + Q`.
+- `--server` → `MINERVA_SERVER`: Change the Server URL
+- `-c/--concurrency` → `MINERVA_CONCURRENCY`: Set the amount of jobs to work on
+- `-r/--retries` → `MINERVA_RETRIES`: How many retry attempts per job
+- `--min-job-size` → `MINERVA_MIN_JOB_SIZE`: Skip jobs if they are too small (e.g., `1MB`)
+- `--max-job-size` → `MINERVA_MAX_JOB_SIZE`: Skip jobs if they are too big (e.g., `40MB`)
+
+On Linux systems, these would be set like so:
+
+```bash
+export MINERVA_CONCURRENCY=10
+export MINERVA_MIN_JOB_SIZE=1MB
+docker compose up
+```
+
+More advanced options are listed in [`constants.py`](/minerva/constants.py).
+
+### Attaching to a Headless Container
+
+If you ran the worker with `docker compose up -d` and now want to take a look at it,
+you can attach to the docker container with `docker attach <container_name>`. This
+container name could be anything, see `docker ps`.
+
+To safely detach without stopping the container, press `CTRL+P` followed by `CTRL+Q`.
+To end the worker container, press `CTRL+C`.
 
 ## Troubleshooting
 
