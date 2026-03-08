@@ -9,19 +9,53 @@ import keylib  # Used to store/retrieve token
 from rich.console import Console  # Fancy-shmancy text for kids
 
 # Imports static constants defined in constants.py
-from minerva.constants import CALLBACK_ENDPOINT, IS_DOCKER, OAUTH_URL
+from minerva.constants import CALLBACK_ENDPOINT, IS_DOCKER, KEYRING_SUPPORT, OAUTH_URL, TOKEN_FILE
 
 
 # Define function for saving authentication token. Takes a single string value as input (token to save)
 def save_token(token: str) -> None:
-    # Store token in the users keyring, supported on all major OS's.
-    keylib.set_password("Minerva-dnt", "na", token)
+    # If we have keyring support, store it there.
+    if KEYRING_SUPPORT:
+        # Store token in the users keyring, supported on all major OS's.
+        keylib.set_password("Minerva-dnt", "na", token)
+    else:
+        # Store it on local filesystem
+        TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN_FILE.write_text(token)
 
 
 # Define function to load authentication token
 def load_token() -> str | None:
-    # Retrieve token from users keyring. If it doesn't exist a None is returned natively.
-    return keylib.get_password("Minerva-dnt", "na")
+    # Initialize token value
+    token = None
+
+    # If we have keyring support, try and load from there first.
+    if KEYRING_SUPPORT:
+        # Retrieve token from users keyring. If it doesn't exist a None is returned natively.
+        # TODO: Migrate file tokens to keyring where supported.
+        token = keylib.get_password("Minerva-dnt", "na")
+
+    # No keyring support so load from filesystem
+    else:
+        # Make sure token file exists
+        if TOKEN_FILE.exists():
+            # Read token from the file and strip EOL markers.
+            # TODO: Handle filesystem errors such as noaccess
+            token = TOKEN_FILE.read_text().strip()
+
+            # If we were able to read the token...
+            if token:
+                # If we can't verify it works...
+                if not verify_token(token):
+                    # Remove the token file
+                    TOKEN_FILE.unlink()
+
+                    # Raise an authentication error
+                    raise ValueError("Authorization is invalid or has expired. Please run 'minerva login' again.")
+                # we tested ok so existing token vaule is good
+
+    # Return our token value
+    return token
 
 
 # Function to verify the token actually works. Takes a single string value as input (token to test)

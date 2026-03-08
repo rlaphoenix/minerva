@@ -1,6 +1,5 @@
 import os
-
-# from pathlib import Path
+from pathlib import Path
 
 # servers/endpoints
 SERVER_URL = os.environ.get("MINERVA_SERVER", "https://firehose.minerva-archive.org")
@@ -14,9 +13,24 @@ USER_AGENT = f"HyperscrapeWorker/v{SERVER_VERSION} (Created by Hackerdude for Mi
 
 # auth
 OAUTH_URL = "https://discord.com/oauth2/authorize?client_id=1478862142793977998&response_type=code&redirect_uri={redirect_uri}&scope=identify"
-# TOKEN_FILE = Path(os.environ.get("MINERVA_TOKEN_FILE", Path.home() / ".minerva-dpn" / "token"))
+TOKEN_FILE = Path(os.environ.get("MINERVA_TOKEN_FILE", Path.home() / ".minerva-dpn" / "token"))
 AUTH_HOST = os.environ.get("MINERVA_AUTH_HOST", "127.0.0.1")
 AUTH_PORT = int(os.environ.get("MINERVA_AUTH_PORT", 19283))
+KEYRING_SUPPORT = False
+
+# Check if keyring support is availabe by importing the module
+try:
+    import keyring
+
+    # A successful import means we have support
+    KEYRING_SUPPORT = True
+
+    # Appease ruff-check
+    keyring.get_keyring()
+
+# Assume it failed and support isn't available.
+except Exception:
+    pass
 
 # speed tests
 SPEED_TEST_URL = "http://ipv4.download.thinkbroadband.com/5MB.zip"
