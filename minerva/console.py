@@ -50,7 +50,7 @@ class WorkerDisplay:
         self._total_bytes = 0
         self._username = None
         self._discord_id = None
-        self._leaderboard_cache: tuple[int | None, int | None] | tuple[None, None] = (None, None)
+        self._leaderboard_cache: tuple[int | None, float | None] | tuple[None, None] = (None, None)
 
     async def clear(self) -> None:
         async with self._lock:
@@ -178,7 +178,7 @@ class WorkerDisplay:
         download_speed = sum(dl)
         upload_speed = sum(ul)
         rank, uploaded = self._leaderboard_cache
-        username = self._username
+        username = self._username or "???"
 
         def get_size(speed: int | float | None) -> str:
             return humanize.naturalsize(speed or 0, binary=True, gnu=False, format="%.2f").replace(" Bytes", "b")
@@ -217,57 +217,107 @@ class WorkerDisplay:
         return stats
 
     async def update_rank(self, server: str) -> None:
+        message_on_fail = "[yellow]Currently unable to refresh leaderboard rank: {}.[/yellow]"
         now = time.monotonic()
-        personal_stats: tuple[int | None, int | None] | tuple[None, None] | None = None
+        personal_stats: tuple[int | None, float | None] | tuple[None, None] | None = None
 
         async with self._lock:
             previous_leaderboard = self._leaderboard_cache
-            if not self._username or not self._discord_id:
-                token = load_token()
-                r = httpx.get(
-                    url="https://discord.com/api/users/@me",
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=30,
-                )
-                if not r.is_success:
-                    self.log.warning(
-                        f"[yellow]Unable to fetch Discord Username ({r.status_code})[/yellow]", exc_info=True
-                    )
-                    return
-                data = r.json()
-                self._username = data["global_name"]
-                self._discord_id = data["id"]
             username = self._username
             discord_id = self._discord_id
 
-        if username and discord_id:
-            if now - self._leaderboard_last_fetch > 180 or previous_leaderboard is None:
-                try:
-                    res = httpx.get(
-                        url=f"{server}{LEADERBOARD_ENDPOINT}",
-                        headers={"User-Agent": USER_AGENT},
-                        timeout=30,
+        if not username or not discord_id:
+            username, discord_id = await self._get_user_info()
+
+        if not username or not discord_id:
+            return None
+
+        if now - self._leaderboard_last_fetch > 180 or previous_leaderboard is None:
+            try:
+                res = httpx.get(
+                    url=f"{server}{LEADERBOARD_ENDPOINT}",
+                    headers={"User-Agent": USER_AGENT},
+                    timeout=30,
+                )
+            except (httpx.ConnectError, httpx.ReadTimeout) as e:
+                self.log.warning(
+                    message_on_fail.format(
+                        f"Unable to connect; {e}",
                     )
-                    leaderboard = sorted(res.json(), key=lambda x: x["downloaded_bytes"], reverse=True)
-                    for rank, item in enumerate(leaderboard, start=1):
-                        item["rank"] = rank
-                    personal_stats = next(
-                        (
-                            (x["rank"], x["downloaded_bytes"] or 0.0)
-                            for x in leaderboard
-                            if x["discord_username"] == username and discord_id in x["avatar_url"]
-                        ),
-                        (None, None),
-                    )
-                except (JSONDecodeError, httpx.ConnectError, httpx.ReadTimeout) as e:
-                    self.log.warning(
-                        f"[yellow]Currently unable to refresh leaderboard rank: {e}.[/yellow]", exc_info=True
-                    )
-                self._leaderboard_last_fetch = now
+                )
+                return None
+
+            if not res.is_success:
+                self.log.warning(message_on_fail.format(self._explain_http_error(res)))
+                return None
+
+            try:
+                leaderboard = sorted(res.json(), key=lambda x: x["downloaded_bytes"], reverse=True)
+            except JSONDecodeError as e:
+                self.log.warning(
+                    message_on_fail.format(f"unable to parse response: {e}"),
+                )
+                return None
+
+            for rank, item in enumerate(leaderboard, start=1):
+                item["rank"] = rank
+            personal_stats = next(
+                (
+                    (x["rank"], x["downloaded_bytes"] or 0.0)
+                    for x in leaderboard
+                    if x["discord_username"] == username and discord_id in x["avatar_url"]
+                ),
+                (None, None),
+            )
+            self._leaderboard_last_fetch = now
 
         if personal_stats is not None:
             async with self._lock:
                 self._leaderboard_cache = personal_stats
+
+    async def _get_user_info(self) -> tuple[str | None, str | None]:
+        message_on_fail = "[yellow]Unable to fetch Discord Username. {}[/yellow]"
+        token = load_token()
+        try:
+            r = httpx.get(
+                url="https://discord.com/api/users/@me",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+            )
+        except (httpx.ConnectError, httpx.ReadTimeout) as e:
+            self.log.warning(
+                message_on_fail.format(
+                    f"Unable to connect; {e}",
+                ),
+                exc_info=True,
+            )
+            return None, None
+
+        if not r.is_success:
+            self.log.warning(
+                message_on_fail.format(self._explain_http_error(r)),
+            )
+            return None, None
+        try:
+            data = r.json()
+        except JSONDecodeError:
+            self.log.warning(
+                message_on_fail.format("Server responded in an unexpected format"),
+            )
+            return None, None
+
+        username = data["global_name"]
+        discord_id = data["id"]
+        async with self._lock:
+            self._username = username
+            self._discord_id = discord_id
+
+        return username, discord_id
+
+    @staticmethod
+    def _explain_http_error(res: httpx.Response) -> str:
+        reason = httpx.codes.get_reason_phrase(res.status_code)
+        return f"Got a {res.status_code} ({reason})"
 
     def __rich__(self) -> Group:
         now = time.monotonic()
