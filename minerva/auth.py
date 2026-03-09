@@ -5,7 +5,7 @@ import webbrowser  # Used to trigger call to GUI web browser for authentication
 from urllib.parse import quote  # Used to encode the URL that'll be used in the OAUTH request
 
 import httpx  # Used to perform HTTPS operations
-import keylib  # Used to store/retrieve token
+import keyring  # Used to store/retrieve token
 from rich.console import Console  # Fancy-shmancy text for kids
 
 # Imports static constants defined in constants.py
@@ -17,7 +17,7 @@ def save_token(token: str) -> None:
     # If we have keyring support, store it there.
     if KEYRING_SUPPORT:
         # Store token in the users keyring, supported on all major OS's.
-        keylib.set_password("Minerva-dnt", "na", token)
+        keyring.set_password("Minerva-dnt", "na", token)
     else:
         # Store it on local filesystem
         TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -33,7 +33,7 @@ def load_token() -> str | None:
     if KEYRING_SUPPORT:
         # Retrieve token from users keyring. If it doesn't exist a None is returned natively.
         # TODO: Migrate file tokens to keyring where supported.
-        token = keylib.get_password("Minerva-dnt", "na")
+        token = keyring.get_password("Minerva-dnt", "na")
 
     # No keyring support so load from filesystem
     else:
