@@ -6,7 +6,7 @@ services:
     entrypoint: ["uv", "run", "minerva"]
     environment:
       - MINERVA_SERVER
-      - MINERVA_TOKEN_FILE
+      - MINERVA_TOKEN_FILE_DIRECTORY
       - MINERVA_AUTH_HOST
       - MINERVA_AUTH_PORT
       - MINERVA_RETRIES

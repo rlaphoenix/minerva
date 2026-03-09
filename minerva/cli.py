@@ -9,7 +9,7 @@ import click
 from rich.logging import RichHandler
 
 from minerva import __version__
-from minerva.auth import do_login, load_token
+from minerva.auth import do_login, do_logout, load_token
 from minerva.console import console
 from minerva.constants import (
     CONCURRENCY,
@@ -41,9 +41,16 @@ def login(server: str) -> str:
 
 
 @main.command()
-def status() -> None:
+@click.option("--server", default=SERVER_URL, help="Manager server URL")
+def logout(server: str) -> None:
+    """Logout from Discord."""
+    do_logout(server)
+
+
+@main.command()
+def status(server: str) -> None:
     """Show login status."""
-    token = load_token()
+    token = load_token(server)
     console.print("[green]Logged in" if token else "[red]Not logged in")
 
 
@@ -81,7 +88,7 @@ def run(
     log = logging.getLogger(__file__)
 
     # ensure user is logged-in first
-    token = load_token()
+    token = load_token(server)
     if not token:
         token = ctx.invoke(login, server=server)
     if not token:

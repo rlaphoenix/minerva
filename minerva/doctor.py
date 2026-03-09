@@ -41,7 +41,7 @@ def print_warn(tag: str, message: str) -> None:
 def doctor_cmd(server: str) -> None:
     console.print("[bold]Checking your setup...[/bold]")
 
-    token = load_token()
+    token = load_token(server)
     if token:
         print_success("Login Token", "Logged in")
     else:

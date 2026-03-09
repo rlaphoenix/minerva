@@ -1,26 +1,73 @@
 import webbrowser
+from base64 import b64encode
 from urllib.parse import quote
 
 import httpx
 from rich.console import Console
 
-from minerva.constants import CALLBACK_ENDPOINT, IS_DOCKER, OAUTH_URL, TOKEN_FILE
+from minerva.constants import (
+    CALLBACK_ENDPOINT,
+    IS_DOCKER,
+    LEGACY_TOKEN_FILE,
+    OAUTH_URL,
+    TOKEN_FILE_DIRECTORY,
+    USE_KEYRING,
+)
+
+try:
+    if not USE_KEYRING:
+        raise ImportError("Keyring support is intentionally disabled.")
+    import keyring
+except ImportError:
+    keyring = None
 
 
-def save_token(token: str) -> None:
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(token)
+def save_token(server_url: str, token: str) -> None:
+    if keyring:
+        keyring.set_password("Minerva-dnt", server_url, token)
+    else:
+        TOKEN_FILE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+        (TOKEN_FILE_DIRECTORY / b64encode(server_url.encode()).decode()).write_text(token)
 
 
-def load_token() -> str | None:
-    if TOKEN_FILE.exists():
-        token = TOKEN_FILE.read_text().strip()
+def load_token(server: str) -> str | None:
+    if LEGACY_TOKEN_FILE.exists():
+        token = LEGACY_TOKEN_FILE.read_text().strip()
         if token:
             if not verify_token(token):
-                TOKEN_FILE.unlink()
+                LEGACY_TOKEN_FILE.unlink()
+                raise ValueError("Authorization is invalid or has expired. Please run 'minerva login' again.")
+            save_token(server, token)
+            LEGACY_TOKEN_FILE.unlink()
+            return token
+    token_file = TOKEN_FILE_DIRECTORY / b64encode(server.encode()).decode()
+    if token_file.exists():
+        token = token_file.read_text().strip()
+        if token:
+            if not verify_token(token):
+                token_file.unlink()
+                raise ValueError("Authorization is invalid or has expired. Please run 'minerva login' again.")
+            if keyring:
+                save_token(server, token)
+            return token
+    if keyring:
+        token = keyring.get_password("Minerva-dnt", server)
+        if token:
+            if not verify_token(token):
+                keyring.delete_password("Minerva-dnt", server)
                 raise ValueError("Authorization is invalid or has expired. Please run 'minerva login' again.")
             return token
     return None
+
+
+def delete_token(server_url: str) -> None:
+    if keyring:
+        keyring.delete_password("Minerva-dnt", server_url)
+    token_file = TOKEN_FILE_DIRECTORY / b64encode(server_url.encode()).decode()
+    if token_file.exists():
+        token_file.unlink()
+    if LEGACY_TOKEN_FILE.exists():
+        LEGACY_TOKEN_FILE.unlink()
 
 
 def verify_token(token: str) -> bool:
@@ -53,7 +100,13 @@ def do_login(server_url: str) -> str:
             continue
         break
 
-    save_token(token)
+    save_token(server_url, token)
     console.print("[bold green]Login successful!")
 
     return token
+
+
+def do_logout(server_url: str) -> None:
+    console = Console()
+    delete_token(server_url)
+    console.print("[bold green]Logout successful!")

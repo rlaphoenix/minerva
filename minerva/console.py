@@ -227,7 +227,7 @@ class WorkerDisplay:
             discord_id = self._discord_id
 
         if not username or not discord_id:
-            username, discord_id = await self._get_user_info()
+            username, discord_id = await self._get_user_info(server)
 
         if not username or not discord_id:
             return None
@@ -275,9 +275,9 @@ class WorkerDisplay:
             async with self._lock:
                 self._leaderboard_cache = personal_stats
 
-    async def _get_user_info(self) -> tuple[str | None, str | None]:
+    async def _get_user_info(self, server: str) -> tuple[str | None, str | None]:
         message_on_fail = "[yellow]Unable to fetch Discord Username. {}[/yellow]"
-        token = load_token()
+        token = load_token(server)
         try:
             r = httpx.get(
                 url="https://discord.com/api/users/@me",

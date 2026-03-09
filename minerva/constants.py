@@ -13,9 +13,11 @@ USER_AGENT = f"HyperscrapeWorker/v{SERVER_VERSION} (Created by Hackerdude for Mi
 
 # auth
 OAUTH_URL = "https://discord.com/oauth2/authorize?client_id=1478862142793977998&response_type=code&redirect_uri={redirect_uri}&scope=identify"
-TOKEN_FILE = Path(os.environ.get("MINERVA_TOKEN_FILE", Path.home() / ".minerva-dpn" / "token"))
+TOKEN_FILE_DIRECTORY = Path(os.environ.get("MINERVA_TOKEN_FILE", Path.home() / ".minerva-dpn" / "tokens"))
+LEGACY_TOKEN_FILE = Path(Path.home() / ".minerva-dpn" / "token")
 AUTH_HOST = os.environ.get("MINERVA_AUTH_HOST", "127.0.0.1")
 AUTH_PORT = int(os.environ.get("MINERVA_AUTH_PORT", 19283))
+USE_KEYRING = os.environ.get("MINERVA_USE_KEYRING", "true").lower() in ("1", "true", "yes")
 
 # speed tests
 SPEED_TEST_URL = "http://ipv4.download.thinkbroadband.com/5MB.zip"
